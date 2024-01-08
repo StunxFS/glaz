@@ -1,0 +1,267 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+use src::utils;
+
+impl Gen {
+    fn gen_decls(mut &self, decls: vec[ast::Decl]) {
+        for (decl in decls) {
+            self.gen_decl(decl);
+        }
+    }
+
+    fn gen_decl(mut &self, mut decl: ast::Decl) {
+        switch (decl) is {
+            ast::CHash => {
+                let c = decl as &ast::CHash;
+                if (!c.flag.is_comptime()) {
+                    self.chash_definitions.writeln(fmt!("#{} {}", c.flag.kind, c.flag.value));
+                }
+            }
+            ast::ConstDecl => {
+                let c = decl as &ast::ConstDecl;
+                if (c.has_expr) {
+                    let name = if (c.module.len == 0) c.name
+                        else fmt!("{}__{}", c.module.replace("::", "__"), c.name);
+                    if (c.expr.is_literal()) {
+                        self.const_decls.writeln(
+                            fmt!("#define {} ({})", name, self.expr_with_cast_as_str(
+                                c.expr, c.typ
+                            ))
+                        );
+                    } else {
+                        self.const_decls.writeln(fmt!("{} {};", c.typ.to_cstr(), name));
+                        if (self.sf.kind == .Default) {
+                            self.consts_inits.writeln(
+                                fmt!("\t{} = {};", name, self.expr_with_cast_as_str(
+                                    c.expr, c.typ
+                                ))
+                            );
+                        }
+                    }
+                }
+            }
+            ast::ModDecl => {
+                let m = decl as &ast::ModDecl;
+                let old_m = self.mods;
+                self.mods = m.name;
+                self.gen_decls(m.decls);
+                self.mods = old_m;
+            }
+            ast::ImplDecl => {
+                let i = decl as &ast::ImplDecl;
+                self.self_type = i.typ;
+                self.gen_decls(i.decls);
+            }
+            ast::FnDecl => {
+                self.gen_fn_decl(decl as &ast::FnDecl);
+            }
+            ast::TestDecl => {
+                self.gen_test_decl(decl as &ast::TestDecl);
+            }
+            else => {}
+        }
+    }
+
+    fn gen_fn_decl(mut &self, mut decl: &ast::FnDecl) {
+        if (decl.is_extern or (self.prefs.build_mode == .Test and decl.is_main)) {
+            return;
+        }
+        self.func = decl;
+
+        if (decl.ret_typ is ast::Result) {
+            self.add_result_type(decl.ret_typ.parent());
+        }
+
+        let is_override = decl.attrs.contains("override");
+        let is_noreturn = decl.attrs.contains("noreturn");
+
+        let ret_typ = fmt!("{} ", decl.ret_typ.to_cstr());
+        if (self.sf.kind != .Declaration) {
+            if (is_noreturn) {
+                self.write("GLAZ_NORETURN ");
+            }
+            if (decl.is_inline) {
+                self.write("inline ");
+            }
+            self.write(ret_typ);
+        }
+        self.funcs_definitions.write_str(ret_typ);
+
+        let mut gname = "";
+        if (decl.is_method or decl.is_associated) {
+            gname += fmt!("{}__{}", self.self_type.ts().gname, decl.name);
+        } elif (decl.info.module.len == 0) {
+            gname = self.escape_c_name(decl.name);
+        } else {
+            gname = fmt!("{}__{}", decl.info.module.replace("::", "__"), decl.name);
+        }
+        if (self.sf.kind != .Declaration) {
+            self.write(gname);
+            self.write("(");
+        }
+        self.funcs_definitions.write_str(gname);
+        self.funcs_definitions.write_str("(");
+
+        let has_args = decl.args.len > 0;
+        if (decl.is_method) {
+            if (is_override) {
+                let self_ts = decl.rec_typ.ts();
+                let mut base_ts = (self_ts.info as &ast::StructInfo).base_ts();
+                while (base_ts != null) {
+                    if (base_ts.?.has_method(decl.name)) {
+                        let rec = fmt!("{}* base", base_ts.?.gname);
+                        if (self.sf.kind != .Declaration) {
+                            self.write(rec);
+                        }
+                        self.funcs_definitions.write_str(rec);
+                        break;
+                    }
+                    base_ts = (base_ts.?.info as &ast::StructInfo).base_ts();
+                }
+            } else {
+                let rec = fmt!("{} self", decl.rec_typ.to_cstr());
+                if (self.sf.kind != .Declaration) {
+                    self.write(rec);
+                }
+                self.funcs_definitions.write_str(rec);
+            }
+            if (has_args) {
+                if (self.sf.kind != .Declaration) {
+                    self.write(", ");
+                }
+                self.funcs_definitions.write_str(", ");
+            }
+        }
+
+        if (has_args) {
+            for (i, arg in decl.args) {
+                let t = arg.typ.to_cstr();
+                if (self.sf.kind != .Declaration) {
+                    self.write(t);
+                }
+                self.funcs_definitions.write_str(t);
+                let n = fmt!(" {}", if (arg.name == "_") self.mktmp()
+                    else self.escape_c_name(arg.name));
+                if (self.sf.kind != .Declaration) {
+                    self.write(n);
+                }
+                self.funcs_definitions.write_str(n);
+                if (i < decl.args.len - 1) {
+                    if (self.sf.kind != .Declaration) {
+                        self.write(", ");
+                    }
+                    self.funcs_definitions.write_str(", ");
+                }
+            }
+        } else {
+            if (!decl.is_method) {
+                if (self.sf.kind != .Declaration) {
+                    self.write("void");
+                }
+                self.funcs_definitions.write_str("void");
+            }
+        }
+
+        self.funcs_definitions.writeln(");");
+
+        if (self.sf.kind != .Declaration) {
+            self.writeln(") {");
+            self.indent++;
+
+            if (is_noreturn and decl.stmts.len == 0) {
+                self.writeln("while(true);");
+            } else {
+                if (decl.is_method) {
+                    let ts = decl.rec_typ.ts();
+                    if (is_override) {
+                        self.writeln(fmt!("{}* self = ({}*)base;", ts.gname, ts.gname));
+                    } elif (decl.use_base) {
+                        if (ts.kind == .Struct) {
+                            let sinfo = ts.info as &ast::StructInfo;
+                            if (let base_ts = sinfo.base_ts()) {
+                                self.writeln(
+                                    fmt!(
+                                        "{}* base = _upcast_{}(self, {});", base_ts.gname,
+                                        base_ts.gname, ts.gname.hash()
+                                    )
+                                );
+                            }
+                        }
+                    }
+                }
+
+                for (mut defer_stmt in decl.defer_stmts) {
+                    let defer_var = self.mktmp();
+                    defer_stmt.defer_var = defer_var;
+                    self.writeln(fmt!("bool {} = false;", defer_var));
+                }
+
+                self.gen_stmts(decl.stmts);
+
+                if (decl.stmts.len > 0) {
+                    let last_stmt = decl.stmts[decl.stmts.len - 1];
+                    if (!self.is_return_stmt(last_stmt)) {
+                        self.write_defer_stmts();
+                        self.autodrop(decl.scope);
+                        if (self.func.ret_typ is ast::Result) {
+                            self.gen_return_empty_result();
+                        }
+                    }
+                }
+
+                if (is_noreturn) {
+                    self.writeln("GLAZ_UNREACHABLE();");
+                }
+            }
+            self.indent--;
+
+            self.writeln("}\n");
+            if (!is_noreturn) {
+                self.defer_stmts = vec[&ast::DeferStmt]::new();
+            }
+        }
+        self.tmps = 0;
+    }
+
+    fn is_return_stmt(&self, stmt: ast::Stmt) bool {
+        switch (stmt) is {
+            ast::RaiseStmt => return true;
+            ast::ReturnStmt => return true;
+            else => return false;
+        }
+    }
+
+    fn gen_test_decl(mut &self, mut decl: &ast::TestDecl) {
+        if (self.prefs.build_mode != .Test) {
+            return;
+        }
+
+        self.inside_test = true;
+        self.ctest = decl;
+        let name = fmt!("__test{}__", ++self.test_c);
+        self.funcs_definitions.writeln(fmt!("void {}(void); // TEST", name));
+        self.test_calls.writeln(fmt!("    {}();", name));
+        self.writeln(fmt!("void {}(void) {", name));
+
+        for (mut defer_stmt in decl.defer_stmts) {
+            let defer_var = self.mktmp();
+            defer_stmt.defer_var = defer_var;
+            self.writeln(fmt!("    bool {} = false;", defer_var));
+        }
+
+        self.indent++;
+        self.gen_stmts(decl.stmts);
+        self.write_defer_stmts();
+        self.autodrop(decl.scope);
+        self.writeln(fmt!("std__testing__print_test_ok(_SLIT(\"{}\"));", utils::smart_quote(decl.name)));
+        self.writeln("OK_TESTS++;");
+        self.indent--;
+
+        self.writeln("}\n");
+        self.defer_stmts = vec[&ast::DeferStmt]::new();
+        self.tmps = 0;
+        self.inside_test = false;
+    }
+}

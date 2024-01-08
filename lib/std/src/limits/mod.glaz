@@ -1,0 +1,28 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+// NOTE: MAX_F* is the largest finite value representable by the type. And
+// SMALLEST_NON_ZERO_F* is the smallest positive, non-zero value representable
+// by the type.
+pub const MAX_F32: f32 = 3.40282346638528859811704183484516925440e+38;
+pub const SMALLEST_NON_ZERO_F32: f32 = 1.401298464324817070923729583289916131280e-45;
+pub const MAX_F64: f64 = 1.797693134862315708145274237317043567981e+308;
+pub const SMALLEST_NON_ZERO_F64: f64 = 4.940656458412465441765687928682213723651e-324;
+
+pub const MAX_I8: i32 = 127;
+pub const MIN_I8: i32 = -128;
+pub const MAX_I16: i32 = 32767;
+pub const MIN_I16: i32 = -32768;
+pub const MAX_I32: i32 = 2147483647;
+pub const MIN_I32: i32 = -2147483648;
+
+pub const MAX_I64: i64 = 9223372036854775807;
+// NOTE: `-9223372036854775808` is wrong because C compilers parse literal
+// values without sign first, and `9223372036854775808` overflows i64, hence
+// the consecutive subtraction by 1.
+pub const MIN_I64: i64 = -9223372036854775807 - 1;
+
+pub const MAX_U8: i32 = 255;
+pub const MAX_U16: i32 = 65535;
+pub const MAX_U32: u32 = 4294967295;
+pub const MAX_U64: u64 = 18446744073709551615;

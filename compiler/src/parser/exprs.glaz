@@ -1,0 +1,878 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+use src::utils;
+use src::tokens::{ self, Kind };
+
+impl Parser {
+	@[inline]
+	fn empty_expr(&self) ast::Expr {
+		return ast::EmptyExpr{pos: self.tok.pos};
+	}
+
+	@[inline]
+	fn parse_expr(mut &self) ast::Expr {
+		return self.parse_or_expr();
+	}
+
+	fn parse_literal(mut &self) ast::Expr {
+		switch (self.tok.kind) {
+			.KeyTrue, .KeyFalse => {
+				let pos = self.tok.pos;
+				let lit = self.tok.kind == .KeyTrue;
+				self.next();
+				return ast::BoolLiteral{lit: lit, pos: pos};
+			}
+			.Char => return self.parse_character_literal();
+			.Minus, .Number => return self.parse_integer_literal();
+			.String => return self.parse_string_literal();
+			.KeyNull => {
+				let pos = self.tok.pos;
+				self.next();
+				return ast::NullLiteral{pos: pos};
+			}
+			else => self.error(fmt!("expected literal, found {}", self.tok.to_str()));
+		}
+		return self.empty_expr();
+	}
+
+	fn parse_integer_literal(mut &self) ast::Expr {
+		let mut pos = self.tok.pos;
+		let is_neg = self.accept(.Minus);
+		if (is_neg) {
+			pos = pos.extend(&self.tok.pos);
+		}
+		let lit = self.tok.lit;
+		self.next();
+
+		let full_lit = if (is_neg) "-" + lit else lit;
+
+		if (lit.index_any(".eE") >= 0 and lit[:2] !in vec[str]{"0x", "0o", "0b"}) {
+			return ast::FloatLiteral{
+				lit: full_lit,
+				pos: pos
+			};
+		} else {
+			return ast::IntegerLiteral{
+				lit: full_lit,
+				pos: pos
+			};
+		}
+	}
+
+	fn parse_character_literal(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let mut is_byte = false;
+		if (self.tok.kind == .Name and self.tok.lit == "b") {
+			is_byte = true;
+			self.check(.Name);
+		}
+		let lit = self.tok.lit;
+		self.check(.Char);
+		return ast::CharLiteral{
+			is_byte: is_byte,
+			lit: lit,
+			pos: pos.extend(&self.prev_tok.pos)
+		};
+	}
+
+	fn check_string(mut &self) str {
+		let lit = self.tok.lit;
+		self.check(.String);
+		return lit;
+	}
+
+	fn parse_string_literal(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let mut is_cstr, mut is_raw = false, false;
+		if (self.tok.kind == .Name) {
+			is_cstr = self.tok.lit == "c";
+			is_raw = self.tok.lit == "r";
+			self.next();
+		}
+		let mut lit = self.tok.lit;
+		self.check(.String);
+		while (self.accept(.String)) {
+			lit += self.prev_tok.lit;
+		}
+		return ast::StringLiteral{
+			lit: lit,
+			is_raw: is_raw,
+			is_cstr: is_cstr,
+			pos: pos.extend(&self.prev_tok.pos)
+		};
+	}
+
+	fn parse_custom_name(mut &self, lit: str) {
+		let pos = self.tok.pos;
+		let name = self.parse_name();
+		if (name != lit) {
+			self.error(fmt!("expected name `{}`, found name `{}`", lit, name), &pos);
+		}
+	}
+
+	fn parse_name(mut &self) str {
+		let lit = self.tok.lit;
+		self.check(.Name);
+		return lit;
+	}
+
+	fn accept_name(mut &self, name: str) bool {
+		if (self.tok.kind == .Name and self.tok.lit == name) {
+			self.next();
+			return true;
+		}
+		return false;
+	}
+
+	fn parse_ident(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let name = self.parse_name();
+		return ast::Ident{
+			name: name,
+			pos: pos,
+			typ: ast::VOID_T,
+			scope: self.scope
+		};
+	}
+
+	fn parse_primary_expr(mut &self) ast::Expr {
+		let mut expr = self.empty_expr();
+		switch (self.tok.kind) {
+			.KeyTrue, .KeyFalse, .Char, .Minus, .Number, .String, .KeyNull => {
+				expr = self.parse_literal();
+			}
+			.KeyBase => {
+				self.use_base = true;
+				let pos = self.tok.pos;
+				self.next();
+				expr = ast::BaseExpr{scope: self.scope, pos: pos};
+			}
+			.KeyMap => {
+				let mut pos = self.tok.pos;
+				self.next();
+				self.check(.Lt);
+				self.parse_custom_name("str");
+				self.check(.Comma);
+				let elem_typ = self.parse_type();
+				pos = pos.extend(&self.tok.pos);
+				self.check(.Gt);
+
+				let mut has_new = false;
+				let mut fields = vec[ast::MapField]::new();
+				if (self.accept(.DoubleColon)) {
+					has_new = true;
+					self.parse_custom_name("new");
+					self.check(.Lparen);
+					self.check(.Rparen);
+				} else {
+					self.check(.Lbrace);
+					if (self.tok.kind != .Rbrace) do {
+						let kpos = self.tok.pos;
+						let key = self.parse_expr();
+						self.check(.Colon);
+						let value = self.parse_expr();
+						push!(fields, ast::MapField{
+							key: key,
+							value: value,
+							pos: kpos.extend(value.pos())
+						});
+					} while (self.accept(.Comma));
+					self.check(.Rbrace);
+				}
+
+				if (fields.len == 0 and !has_new) {
+					self.error("invalid map literal", &pos);
+					self.note("1 or more key-values are expected");
+					self.help("use `map<str, T>::new()` instead");
+				}
+
+				expr = ast::MapLiteral{
+					elem_typ: elem_typ,
+					fields: fields,
+					has_new: has_new,
+					pos: pos
+				};
+			}
+			.KeySelf => {
+				let pos = self.tok.pos;
+				self.next();
+				expr = ast::SelfExpr{scope: self.scope, pos: pos};
+			}
+			.Dot => { // dot enum syntax: .EnumField
+				let mut pos = self.tok.pos;
+				self.next();
+				pos = pos.extend(&self.tok.pos);
+				let field = self.parse_name();
+				expr = ast::DotEnumExpr{
+					field: field,
+					pos: pos
+				};
+			}
+			.KeyCast => {
+				let pos = self.tok.pos;
+				self.next();
+				self.check(.Lparen);
+				expr = self.parse_expr();
+				self.check(.Comma);
+				let ty = self.parse_type();
+				self.check(.Rparen);
+				expr = ast::CastExpr{
+					expr: expr,
+					typ: ty,
+					pos: pos.extend(&self.prev_tok.pos)
+				};
+			}
+			.Lparen => {
+				let pos = self.tok.pos;
+				self.next();
+				let e = self.parse_expr();
+				if (self.accept(.Comma)) { // tuple
+					let mut exprs = vec[ast::Expr]{e};
+					do {
+						push!(exprs, self.parse_expr());
+					} while (self.accept(.Comma));
+					self.check(.Rparen);
+					expr = ast::TupleLiteral{
+						exprs: exprs,
+						pos: pos.extend(&self.prev_tok.pos)
+					};
+				} else {
+					self.check(.Rparen);
+					expr = ast::ParExpr{expr: e, pos: pos.extend(&self.prev_tok.pos)};
+				}
+			}
+			.KeyUnsafe => {
+				if (self.inside_unsafe) {
+					self.error("already inside `unsafe` block");
+				}
+				let mut pos = self.tok.pos;
+				self.check(.KeyUnsafe);
+				self.check(.Lbrace);
+				self.inside_unsafe = true;
+				expr = self.parse_expr();
+				self.inside_unsafe = false;
+				pos = pos.extend(&self.tok.pos);
+				self.check(.Rbrace);
+				expr = ast::UnsafeExpr{
+					expr: expr, pos: pos
+				};
+			}
+			.KeySrc => expr = self.parse_src();
+			.KeyTry => {
+				let pos = self.tok.pos;
+				self.next();
+				expr = self.parse_expr();
+
+				let mut catch_ = self.empty_stmt();
+				let mut has_catch, mut has_orelse = false, false;
+				let mut orelse_val = self.empty_expr();
+				let mut has_err_var = false;
+				if (self.accept(.KeyOrElse)) {
+					has_orelse = true;
+				} elif (self.accept(.KeyCatch)) {
+					has_catch = true;
+					has_err_var = true;
+					self.open_scope();
+					try self.scope.?.add(ast::Var{
+						name: "err",
+						is_used: true
+					}) catch utils::compiler_error(err.msg);
+				}
+
+				if (has_orelse) {
+					orelse_val = self.parse_expr();
+				} elif (has_catch) {
+					catch_ = self.parse_stmt(false);
+				}
+
+				let sc = self.scope.?;
+				if (has_err_var) self.close_scope();
+				expr = ast::TryExpr{
+					expr: expr,
+					has_orelse: has_orelse,
+					orelse_val: orelse_val,
+					has_catch: has_catch,
+					catcher: catch_,
+					scope: sc,
+					pos: pos.extend(&self.prev_tok.pos)
+				};
+			}
+			.KeyVec, .Lbracket => { // vector or array literal
+				let mut pos = self.tok.pos;
+				let is_vector = self.accept(.KeyVec);
+				self.next();
+
+				let elem_typ = self.parse_type();
+
+				let mut unknown_size = false;
+				let mut has_size = false;
+				let mut size = self.empty_expr();
+				if (!is_vector and self.accept(.Semicolon)) {
+					has_size = true;
+					if (self.accept_name("_")) {
+						unknown_size = true;
+					} else {
+						size = self.parse_expr();
+					}
+				}
+				self.check(.Rbracket);
+
+				let mut elems = vec[ast::Expr]::new();
+				let mut len_expr = self.empty_expr();
+				let mut cap_expr = self.empty_expr();
+				let mut init_expr = self.empty_expr();
+				let mut has_len, mut has_cap, mut has_init = false, false, false;
+				if (self.accept(.Lbrace)) { // vec[T]{ ... }
+					if (self.tok.kind != .Rbrace) {
+						do {
+							push!(elems, self.parse_expr());
+						} while (self.accept(.Comma));
+					}
+					pos = pos.extend(&self.tok.pos);
+					self.check(.Rbrace);
+					if (elems.len == 0) {
+						if (has_size) {
+							self.error("invalid array literal", &pos);
+						} else {
+							self.error("invalid vector literal", &pos);
+						}
+						self.note("1 or more elements are expected");
+						if (has_size) {
+							self.help("use `[T; SIZE]::new()` instead");
+						} else {
+							self.help("use `vec[T]::new()` instead");
+						}
+					} elif (unknown_size) {
+						size = ast::IntegerLiteral{
+							lit: elems.len.to_str(),
+							pos: pos
+						};
+					}
+				} else { // vec[T]::new(0, 0, TExpr);
+					self.check(.DoubleColon);
+					self.parse_custom_name("new");
+					let mut i = 0;
+					self.check(.Lparen);
+					if (self.tok.kind != .Rparen) {
+						if (has_size) {
+							self.error("array literal do not take arguments", &pos);
+						}
+						do {
+							let arg = self.parse_expr();
+							if (i == 0) {
+								has_len = true;
+								len_expr = arg;
+							} elif (i == 1) {
+								has_cap = true;
+								cap_expr = arg;
+							} elif (i == 2) {
+								has_init = true;
+								init_expr = arg;
+							}
+						} while (self.accept(.Comma) and i++ < 3);
+					}
+					pos = pos.extend(&self.tok.pos);
+					self.check(.Rparen);
+					if (unknown_size) {
+						self.error("unable to calculate array size", &pos);
+						self.help("add a size: `[T; 5]::new()");
+					}
+				}
+				expr = ast::ArrayLiteral{
+					elem_typ: elem_typ,
+					size: size,
+					elems: elems,
+					is_fixed: has_size,
+					is_lit: elems.len > 0,
+					has_len: has_len,
+					len_expr: len_expr,
+					has_cap: has_cap,
+					cap_expr: cap_expr,
+					has_init: has_init,
+					init_expr: init_expr,
+					pos: pos
+				};
+			}
+			.Dollar, .KeyIf => {
+				let pos = self.tok.pos;
+				let is_comptime = self.accept(.Dollar);
+				self.next();
+				self.check(.Lparen);
+				let cond = self.parse_expr();
+				self.check(.Rparen);
+				let left = self.parse_expr();
+				if (is_comptime) {
+					self.check(.Dollar);
+				}
+				self.check(.KeyElse);
+				let right = self.parse_expr();
+				expr = ast::TernaryExpr{
+					cond: cond,
+					left: left,
+					right: right,
+					pos: pos.extend(right.pos()),
+					is_comptime: is_comptime
+				};
+			}
+			.Ellipsis => {
+				let pos = self.tok.pos;
+				self.next();
+				let e = self.parse_expr();
+				expr = ast::ArrayDecompose{
+					expr: e,
+					pos: pos.extend(expr.pos())
+				};
+			}
+			else => {
+				if (self.tok.kind == .Name) {
+					if (self.peek_tok.kind == .Bang) { // builtin call
+						let name_pos = self.tok.pos;
+						let name = self.tok.lit;
+						self.next();
+						self.check(.Bang); // skip '!'
+						self.check(.Lparen);
+						let mut args = vec[ast::Expr]::new();
+						if (name in vec[str]{"sizeof", "default"}) {
+							let pos = self.tok.pos;
+							push!(args, ast::TypeNode{
+								typ: self.parse_type(),
+								pos: pos
+							});
+						}
+						if (self.tok.kind != .Rparen) {
+							do {
+								push!(args, self.parse_expr());
+							} while (self.accept(.Comma));
+						}
+						self.check(.Rparen);
+						expr = ast::BuiltinCallExpr{
+							name: name,
+							name_pos: name_pos,
+							args: args,
+							pos: name_pos.extend(&self.prev_tok.pos)
+						};
+					} elif (self.peek_tok.kind == .Char) {
+						if (self.tok.lit == "b") {
+							expr = self.parse_character_literal();
+						} else {
+							self.error(
+								"only `b` is recognized as a valid prefix for a "
+								"character literal"
+							);
+						}
+					} elif (self.peek_tok.kind == .String) {
+						if (self.tok.lit in vec[str]{"c", "r"}) {
+							expr = self.parse_string_literal();
+						} else {
+							self.error(
+								"only `c` and `r` are recognized as valid prefixes "
+								"for a string literal"
+							);
+						}
+					} else {
+						expr = self.parse_ident();
+					}
+				}
+			}
+		}
+		loop {
+			let expr_pos = expr.pos();
+			switch {
+				self.accept(.Question) and self.accept(.Question) => {
+					// null-coalescing
+					let default_expr = self.parse_expr();
+					let default_expr_pos = self.tok.pos;
+					expr = ast::NullCoalescing{
+						expr: expr,
+						default_expr: default_expr,
+						pos: expr_pos.extend(&default_expr_pos)
+					};
+				}
+				self.accept(.Lbrace) => { // struct literal
+					let mut has_base_init = false;
+					let mut base_init = self.empty_expr();
+					let mut has_update_expr = false;
+					let mut update_expr = self.empty_expr();
+					let mut fields = vec[ast::StructLiteralField]::new();
+					if (self.tok.kind != .Rbrace) do {
+						let mut name = "";
+						let mut v = self.empty_expr();
+						let mut name_pos = tokens::Position{};
+						if (!has_base_init and self.tok.kind == .KeyBase) {
+							self.check(.KeyBase);
+							self.check(.Colon);
+							base_init = self.parse_expr();
+							has_base_init = true;
+						} elif (fields.len == 0 and self.tok.kind == .Ellipsis) {
+							// struct updating syntax: let e2 = Foo{ ...e, id: 1 };
+							self.check(.Ellipsis);
+							has_update_expr = true;
+							update_expr = self.parse_expr();
+						} else {
+							name_pos = self.tok.pos;
+							name = self.parse_name();
+							self.check(.Colon);
+							v = self.parse_expr();
+							push!(fields, ast::StructLiteralField{
+								name: name,
+								expr: v,
+								pos: name_pos
+							});
+						}
+					} while (self.accept(.Comma));
+					self.check(.Rbrace);
+					expr = ast::StructLiteral{
+						name: expr,
+						has_base_init: has_base_init,
+						base_init: base_init,
+						update_expr: update_expr,
+						has_update_expr: has_update_expr,
+						fields: fields,
+						pos: expr_pos.extend(&self.prev_tok.pos)
+					};
+				}
+				self.tok.kind in vec[Kind]{.Inc, .Dec} => {
+					let op = self.tok.kind;
+					self.next();
+					expr = ast::PostfixExpr{
+						left: expr,
+						op: op,
+						pos: expr_pos.extend(&self.prev_tok.pos)
+					};
+				}
+				self.accept(.Lparen) => { // functions/methods call
+					let mut args = vec[ast::CallArg]::new();
+					if (self.tok.kind != .Rparen) {
+						let mut expecting_named_arg = false;
+						do {
+							if (self.tok.kind == .Name
+								and self.peek_tok.kind == .Assign) {
+								// named arguments
+								let name_p = self.tok.pos;
+								let name = self.parse_name();
+								self.check(.Assign);
+								let def_expr = self.parse_expr();
+								push!(args, ast::CallArg{
+									name: name,
+									expr: def_expr,
+									is_named: true,
+									pos: name_p.extend(def_expr.pos())
+								});
+								expecting_named_arg = true;
+							} else {
+								if (expecting_named_arg) {
+									self.error("expected named argument");
+								}
+								let arg = self.parse_expr();
+								push!(args, ast::CallArg{
+									expr: arg,
+									pos: arg.pos().*
+								});
+							}
+						} while (self.accept(.Comma));
+					}
+					self.check(.Rparen);
+					expr = ast::CallExpr{
+						left: expr,
+						args: args,
+						pos: expr_pos.extend(&self.prev_tok.pos)
+					};
+				}
+				self.accept(.Dot) => {
+					let pos = self.tok.pos;
+					switch {
+						self.accept(.Mult) => { // expr.*
+							expr = ast::IndirectExpr{
+								expr: expr,
+								pos: expr_pos.extend(&pos)
+							};
+						}
+						self.accept(.Question) => { // expr.?
+							expr = ast::NullCheckExpr{
+								expr: expr,
+								pos: expr_pos.extend(&pos)
+							};
+						}
+						else => {
+							let name_pos = self.tok.pos;
+							let name = self.parse_name();
+							expr = ast::SelectorExpr{
+								left: expr,
+								field_name: name,
+								field_pos: name_pos,
+								pos: expr_pos.extend(&pos)
+							};
+						}
+					}
+				}
+				self.tok.kind == .DoubleColon => {
+					expr = self.parse_path_expr(expr);
+				}
+				self.accept(.Lbracket) => {
+					let mut index = self.empty_expr();
+					if (self.accept(.Colon)) { // [:expr]
+						if (self.tok.kind == .Rbracket) {
+							index = ast::RangeExpr{ // [:]
+								pos: expr_pos.extend(&self.tok.pos),
+								use_colon: true
+							};
+						} else {
+							index = self.parse_expr();
+							index = ast::RangeExpr{
+								end: index,
+								has_end: true,
+								pos: index.pos().*,
+								use_colon: true
+							};
+						}
+					} else {
+						index = self.parse_expr();
+						if (self.accept(.Colon)) {
+							if (self.tok.kind == .Rbracket) { // [1:]
+								index = ast::RangeExpr{
+									start: index,
+									has_start: true,
+									pos: index.pos().*,
+									use_colon: true
+								};
+							} else { // [1:2]
+								let index2 = self.parse_expr();
+								index = ast::RangeExpr{
+									start: index,
+									has_start: true,
+									end: index2,
+									has_end: true,
+									pos: index.pos().extend(index2.pos()),
+									use_colon: true
+								};
+							}
+						}
+					}
+					self.check(.Rbracket);
+					expr = ast::IndexExpr{
+						left: expr,
+						index: index,
+						pos: expr_pos.extend(&self.prev_tok.pos)
+					};
+				}
+				self.tok.kind in vec[Kind]{.DotDot, .Ellipsis} => {
+					let is_inclusive = self.tok.kind == .Ellipsis;
+					self.next();
+					let end = self.parse_expr();
+					expr = ast::RangeExpr{
+						is_inclusive: is_inclusive,
+						start: expr,
+						has_start: true,
+						end: end,
+						has_end: true,
+						pos: expr_pos.extend(end.pos())
+					};
+				}
+				self.accept(.KeyAs) => {
+					// TODO: remove this when the compiler no longer uses the old syntax
+					let t = self.parse_type();
+					expr = ast::CastExpr{
+						expr: expr,
+						typ: t,
+						pos: expr_pos.extend(&self.prev_tok.pos)
+					};
+				}
+				else => break;
+			}
+		}
+		return expr;
+	}
+
+	fn parse_src(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		self.next();
+		// return ast::SrcExpr{pos: pos}; -> with `glaz-fmt`
+		return ast::Ident{name: self.prefs.src_name, pos: pos, scope: self.scope};
+	}
+
+	fn parse_path_expr(mut &self, left: ast::Expr) ast::Expr {
+		self.check(.DoubleColon);
+		let pos = self.tok.pos;
+		let name = self.parse_name();
+		return ast::PathExpr{
+			left: left,
+			field_name: name,
+			field_pos: pos,
+			is_last: self.tok.kind != .DoubleColon,
+			pos: left.pos().extend(&pos)
+		};
+	}
+
+	fn parse_unary_expr(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let mut expr = self.empty_expr();
+		if (self.tok.kind in vec[Kind]{.Amp, .Bang, .BitNot, .Inc, .Dec}
+			or (self.tok.kind == .Minus and self.peek_tok.kind != .Number)
+		) {
+			let op = self.tok.kind;
+			self.next();
+			let right = self.parse_unary_expr();
+			expr = ast::UnaryExpr{right: right, op: op, pos: pos.extend(&self.prev_tok.pos)};
+		} else {
+			expr = self.parse_primary_expr();
+		}
+		return expr;
+	}
+
+	fn parse_multiplicative_expr(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let mut left = self.parse_unary_expr();
+		loop {
+			if (self.tok.kind in vec[Kind]{.Mult, .Div, .Mod}) {
+				let op = self.tok.kind;
+				self.next();
+				let right = self.parse_unary_expr();
+				left = ast::BinaryExpr{
+					left: left,
+					op: op,
+					right: right,
+					pos: pos.extend(right.pos())
+				};
+			} else break;
+		}
+		return left;
+	}
+
+	fn parse_additive_expr(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let mut left = self.parse_multiplicative_expr();
+		loop {
+			if (self.tok.kind in vec[Kind]{.Plus, .Minus}) {
+				let op = self.tok.kind;
+				self.next();
+				let right = self.parse_multiplicative_expr();
+				left = ast::BinaryExpr{
+					left: left,
+					op: op,
+					right: right,
+					pos: pos.extend(right.pos())
+				};
+			} else break;
+		}
+		return left;
+	}
+
+	fn parse_shift_expr(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let mut left = self.parse_additive_expr();
+		loop {
+			if (self.tok.kind in vec[Kind]{.Lt, .Gt}) {
+				let op: tokens::Kind = if (self.tok.kind == .Lt) .Lshift else .Rshift;
+				if (self.tok.pos.pos + 1 == self.peek_tok.pos.pos) {
+					self.next();
+					self.next();
+					let right = self.parse_additive_expr();
+					left = ast::BinaryExpr{
+						left: left,
+						op: op,
+						right: right,
+						pos: pos.extend(right.pos())
+					};
+				} else {
+					break;
+				}
+			} elif (self.tok.kind in vec[Kind]{.Amp, .Pipe, .Xor}) {
+				let op = self.tok.kind;
+				self.next();
+				let right = self.parse_additive_expr();
+				left = ast::BinaryExpr{
+					left: left,
+					op: op,
+					right: right,
+					pos: pos.extend(right.pos())
+				};
+			} else break;
+		}
+		return left;
+	}
+
+	fn parse_relational_expr(mut &self) ast::Expr {
+		let left_pos = self.tok.pos;
+		let mut left = self.parse_shift_expr();
+		loop {
+			if (self.tok.kind in vec[Kind]{.Gt, .Lt, .Ge, .Le, .KeyIn, .KeyNotIn}) {
+				let op = self.tok.kind;
+				self.next();
+				let right = self.parse_shift_expr();
+				left = ast::BinaryExpr{
+					left: left,
+					op: op,
+					right: right,
+					pos: left_pos.extend(right.pos())
+				};
+			} elif (self.tok.kind in vec[Kind]{.KeyIs, .KeyNotIs}) {
+				let op = self.tok.kind;
+				self.next();
+				let typ = self.parse_type();
+				let pos = self.prev_tok.pos;
+				left = ast::BinaryExpr{
+					left: left,
+					op: op,
+					right: ast::TypeNode{
+						typ: typ,
+						pos: pos
+					},
+					pos: left_pos.extend(&pos)
+				};
+				break;
+			} else break;
+		}
+		return left;
+	}
+
+	fn parse_equality_expr(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let mut left = self.parse_relational_expr();
+		loop {
+			if (self.tok.kind in vec[Kind]{.Eq, .Ne}) {
+				let op = self.tok.kind;
+				self.next();
+				let right = self.parse_relational_expr();
+				left = ast::BinaryExpr{
+					left: left,
+					op: op,
+					right: right,
+					pos: pos.extend(right.pos())
+				};
+			} else break;
+		}
+		return left;
+	}
+
+	fn parse_and_expr(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let mut left = self.parse_equality_expr();
+		while (self.accept(.KeyAnd)) {
+			let right = self.parse_equality_expr();
+			left = ast::BinaryExpr{
+				left: left,
+				op: .KeyAnd,
+				right: right,
+				pos: pos.extend(right.pos())
+			};
+		}
+		return left;
+	}
+
+	fn parse_or_expr(mut &self) ast::Expr {
+		let pos = self.tok.pos;
+		let mut left = self.parse_and_expr();
+		while (self.accept(.KeyOr)) {
+			let right = self.parse_and_expr();
+			left = ast::BinaryExpr{
+				left: left,
+				op: .KeyOr,
+				right: right,
+				pos: pos.extend(right.pos())
+			};
+		}
+		return left;
+	}
+}

@@ -1,0 +1,7 @@
+name: "glazc"
+description: "The Glaz programming language compiler"
+version: "0.1.10b"
+type: "bin"
+homepage: "https://github.com/glaz-lang/glaz"
+authors: ["The Glaz Developers"]
+dependencies: []

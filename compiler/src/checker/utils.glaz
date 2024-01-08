@@ -1,0 +1,401 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::limits;
+
+use src::{ast, tokens};
+use src::utils::{check_limit, check_limit_unsigned};
+
+impl Checker {
+	fn mark_value_as_moved(mut &self, mut expr: &ast::Expr, clone_call: bool = false) {
+		if (!self.prefs.owner_check) return;
+		switch (expr) is {
+			ast::Ident => {
+				let i = expr as &ast::Ident;
+				if (i.is_obj) {
+					let mut obj = i.obj as &ast::Var;
+					let ts = obj.typ.ts();
+					if (!(obj.typ.is_pointer() or obj.typ is ast::Reference)) {
+						obj.lifetime.is_moved = !self.is_marked_as_copy(ts) and !clone_call;
+						obj.lifetime.moved_in_pos = i.pos;
+					}
+				}
+			}
+			ast::CallExpr => {
+				let mut c = expr as &ast::CallExpr;
+				self.mark_value_as_moved(&c.left, c.info.is_method and c.info.name == "clone");
+				for (mut &arg in c.args) {
+					self.mark_value_as_moved(&arg.expr);
+				}
+			}
+			ast::StructLiteral => {
+				let mut s = expr as &ast::StructLiteral;
+				if (s.has_base_init) {
+					self.mark_value_as_moved(&s.base_init);
+				}
+				for (mut &f in s.fields) {
+					self.mark_value_as_moved(&f.expr);
+				}
+			}
+			ast::IndirectExpr => {
+				self.mark_value_as_moved(&(expr as &ast::IndirectExpr).expr);
+			}
+			ast::ParExpr => {
+				self.mark_value_as_moved(&(expr as &ast::ParExpr).expr);
+			}
+			ast::TernaryExpr => {
+				let mut t = expr as &ast::TernaryExpr;
+				self.mark_value_as_moved(&t.left);
+				self.mark_value_as_moved(&t.right);
+			}
+			else => {}
+		}
+	}
+
+	fn is_marked_as_copy(&self, ts: &ast::TypeSymbol) bool {
+		switch (ts.kind) {
+			.Vector, .Map, .BoxT => return false;
+			.Struct, .Union => return ts.is_copy;
+			.Array => {
+				if (!self.is_marked_as_copy((ts.info as &ast::ArrayInfo).elem_typ.ts())) {
+					return false; // not valid
+				}
+				return true;
+			}
+			.Tuple => {
+				for (t in (ts.info as &ast::TupleInfo).fields) {
+					if (!self.is_marked_as_copy(t.ts())) {
+						return false; // not valid
+					}
+				}
+				return true;
+			}
+			.SumType => {
+				for (t in (ts.info as &ast::SumTypeInfo).typs) {
+					if (!self.is_marked_as_copy(t.ts())) {
+						return false; // not valid
+					}
+				}
+				return true;
+			}
+			// primitive types
+			else => return true;
+		}
+	}
+
+	fn is_local_value(&self, expr: &ast::Expr) bool {
+		switch (expr) is {
+			ast::Ident => {
+				let i = cast(expr, &ast::Ident);
+				if (i.is_obj) {
+					if ((i.obj as &ast::Var).is_arg) {
+						return false;
+					}
+					if (self.type_is_pointer(i.typ)) {
+						return (i.obj as &ast::Var).is_local;
+					}
+					return true;
+				} elif (i.sym is ast::Const) {
+					return false;
+				}
+			}
+			ast::ParExpr => {
+				return self.is_local_value(&(expr as &ast::ParExpr).expr);
+			}
+			ast::UnaryExpr => {
+				let u = expr as &ast::UnaryExpr;
+				return self.is_local_value(&u.right);
+			}
+			ast::BinaryExpr => {
+				let b = expr as &ast::BinaryExpr;
+				return self.is_local_value(&b.left) or self.is_local_value(&b.right);
+			}
+			ast::SelectorExpr => {
+				return self.is_local_value((expr as &ast::SelectorExpr).root());
+			}
+			ast::PathExpr => return false;
+			ast::CallExpr => {
+				let c = expr as &ast::CallExpr;
+				return !self.type_is_pointer(expr.typ()) or self.is_local_value(&c.left);
+			}
+			ast::CastExpr => {
+				return self.is_local_value(&(expr as &ast::CastExpr).expr);
+			}
+			ast::UnsafeExpr => {
+				return self.is_local_value(&(expr as &ast::UnsafeExpr).expr);
+			}
+			ast::TernaryExpr => {
+				let t = expr as &ast::TernaryExpr;
+				return self.is_local_value(&t.left) and self.is_local_value(&t.right);
+			}
+			ast::IndexExpr => {
+				return self.is_local_value(&(expr as &ast::IndexExpr).left);
+			}
+			ast::NullCheckExpr => return self.is_local_value(&(expr as &ast::NullCheckExpr).expr);
+			ast::IndirectExpr => return self.is_local_value(&(expr as &ast::IndirectExpr).expr);
+			ast::NullLiteral, ast::BaseExpr, ast::SelfExpr => return false;
+			else => return true;
+		}
+	}
+
+	fn mark_vars_as_unmoved(&self, scope: &ast::Scope) {
+		let mut sc: ?&ast::Scope = scope;
+		while (sc != null) {
+			for (&o in sc.?.objects) {
+				if (o is ast::Var) {
+					let mut v = o as &ast::Var;
+					if (v.lifetime.is_moved) {
+						v.lifetime.is_moved = false;
+					}
+				}
+			}
+			sc = sc.?.parent;
+		}
+	}
+
+	fn type_is_pointer(&self, mut t: ast::Type) bool {
+		if (t is ast::Optional) {
+			t = t.parent();
+		}
+		if (t is ast::Pointer or t is ast::Reference) {
+			return true;
+		} elif (t.is_c_pointer()) {
+			return true;
+		}
+		return false;
+	}
+
+	fn check_integer_limit(mut &self, f: &ast::IntegerLiteral) {
+		// TODO: check number limits also on casts in CGen.
+		let exp_ts = self.expected_type.ts();
+		let msg = fmt!("literal out of range for type `{}`", exp_ts.name);
+		switch (exp_ts.kind) {
+			.I8, .U8 => {
+				if (exp_ts.kind == .I8) {
+					if (!check_limit(f.lit, limits::MIN_I8, limits::MAX_I8)) {
+						self.error(msg, &f.pos);
+					}
+				} else {
+					if (!check_limit(f.lit, 0, limits::MAX_U8)) {
+						self.error(msg, &f.pos);
+					}
+				}
+			}
+			.I16, .U16 => {
+				if (exp_ts.kind == .I16) {
+					if (!check_limit(f.lit, limits::MIN_I16, limits::MAX_I16)) {
+						self.error(msg, &f.pos);
+					}
+				} else {
+					if (!check_limit(f.lit, 0, limits::MAX_U16)) {
+						self.error(msg, &f.pos);
+					}
+				}
+			}
+			.I32, .U32 => {
+				if (exp_ts.kind == .I32) {
+					if (!check_limit(f.lit, limits::MIN_I32, limits::MAX_I32)) {
+						self.error(msg, &f.pos);
+					}
+				} else {
+					if (!check_limit_unsigned(f.lit, limits::MAX_U32)) {
+						self.error(msg, &f.pos);
+					}
+				}
+			}
+			.I64, .U64 => {
+				if (exp_ts.kind == .I64) {
+					if (!check_limit(f.lit, limits::MIN_I64, limits::MAX_I64)) {
+						self.error(msg, &f.pos);
+					}
+				} else {
+					if (!check_limit_unsigned(f.lit, limits::MAX_U64)) {
+						self.error(msg, &f.pos);
+					}
+				}
+			}
+			.Isize, .Usize => {
+				if (exp_ts.kind == .Isize) {
+					if (!check_limit(
+						f.lit,
+						if (self.prefs.cpu_info.is_32bit) limits::MIN_I32 as i64
+							else limits::MIN_I64,
+						if (self.prefs.cpu_info.is_32bit) limits::MAX_I32 as i64
+							else limits::MAX_I64
+					)) {
+						self.error(msg, &f.pos);
+					}
+				} else {
+					if (!check_limit_unsigned(
+						f.lit,
+						if (self.prefs.cpu_info.is_32bit) limits::MAX_U32 as u64
+							else limits::MAX_U64
+					)) {
+						self.error(msg, &f.pos);
+					}
+				}
+			}
+			else => {}
+		}
+	}
+
+	// Convert `untyped_int` and `untyped_float` to `i32` and `f64` respectively.
+	// TODO: Maybe we should use `i64` instead of `i32`?
+	fn untyped_to_real_type(&self, typ: ast::Type) ast::Type {
+		let kind = typ.ts().kind;
+		switch (kind) {
+			.UntypedInt => return self.table.i32_t;
+			.UntypedFloat => return self.table.f64_t;
+			else => {
+				return typ;
+			}
+		}
+	}
+
+	fn value_type(&self, t: ast::Type) ast::Type {
+		let ts = t.ts();
+		switch (ts.kind) {
+			.Array => return cast(ts.info, &ast::ArrayInfo).elem_typ;
+			.Vector => return cast(ts.info, &ast::VectorInfo).elem_typ;
+			.Slice => return cast(ts.info, &ast::SliceInfo).elem_typ;
+			.Map => return cast(ts.info, &ast::MapInfo).val_typ;
+			.Str, .Charptr => return self.table.u8_t;
+			else => return t;
+		}
+	}
+
+	fn check_obj_mutable(mut &self, mut obj: &ast::Var, pos: &tokens::Position) {
+		if (!obj.is_mut) {
+			let kind = if (obj.name == "self") "receiver" else if (obj.is_arg) "argument"
+				else "variable";
+			self.error(fmt!("cannot use `{}` as mutable {}", obj.name, kind), pos);
+			self.help(fmt!("consider declaring that {} as mutable: `mut {}`", kind, obj.name));
+		} else {
+			obj.is_changed = true;
+		}
+	}
+
+	fn check_var_mutable(mut &self, mut expr: &ast::Expr) {
+		switch (expr) is {
+			ast::Ident => {
+				let mut i = expr as &ast::Ident;
+				if (i.resolved) {
+					if (i.is_obj) {
+						self.check_obj_mutable(i.obj as &ast::Var, &i.pos);
+					} elif (i.sym is ast::Const) {
+						self.error(
+							fmt!("cannot use constant `{}` as mutable value", i.name), &i.pos
+						);
+					}
+				}
+			}
+			ast::BaseExpr => {
+				let s = expr as &ast::BaseExpr;
+				if (let mut sv = s.scope.?.lookup("self")) {
+					self.check_obj_mutable(sv as &ast::Var, &s.pos);
+				}
+			}
+			ast::SelfExpr => {
+				let s = expr as &ast::SelfExpr;
+				if (let mut sv = s.scope.?.lookup("self")) {
+					self.check_obj_mutable(sv as &ast::Var, &s.pos);
+				}
+			}
+			ast::ArrayLiteral => {
+				self.error(
+					"array literal cannot be modified", &(expr as &ast::ArrayLiteral).pos
+				);
+			}
+			ast::MapLiteral => {
+				self.error(
+					"map literal cannot be modified", &(expr as &ast::MapLiteral).pos
+				);
+			}
+			ast::StringLiteral => {
+				self.error(
+					"string literal cannot be modified", &(expr as &ast::StringLiteral).pos
+				);
+			}
+			ast::UnsafeExpr => {
+				let mut u = expr as &ast::UnsafeExpr;
+				self.check_var_mutable(&u.expr);
+			}
+			ast::SelectorExpr => {
+				let mut s = expr as &ast::SelectorExpr;
+				let ts = self.check_expr(&s.left).ts();
+				if (ts.kind != .Void) {
+					if (let f = ts.find_field(s.field_name)) {
+						if (!f.is_mut) {
+							self.error(
+								fmt!(
+									"field `{}.{}` is immutable",
+									ts.name, s.field_name
+								),
+								&s.field_pos
+							);
+						}
+						s.field_info = f;
+						s.typ = f.typ;
+					}
+					// check immutable array/map/str fields.
+					// TODO: revisit me when splitting `str`/`String` and `vec`
+					if (self.prefs.src_name != "std" and ts.kind in vec[ast::TypeKind]{
+						.Map, .Str, .Vector } and s.field_name in vec[str]{"cstr", "len", "cap"}) {
+						self.error(
+							fmt!("field `{}.{}` cannot be modified", ts.name, s.field_name),
+							&s.field_pos
+						);
+					}
+				}
+				self.check_var_mutable(&s.left);
+			}
+			ast::IndexExpr => {
+				self.check_var_mutable(&cast(expr, &ast::IndexExpr).left);
+			}
+			ast::NullCoalescing => {
+				let mut n = expr as &ast::NullCoalescing;
+				self.check_var_mutable(&n.expr);
+				self.check_var_mutable(&n.default_expr);
+			}
+			ast::NullCheckExpr => {
+				self.check_var_mutable(&(expr as &ast::NullCheckExpr).expr);
+			}
+			ast::IndirectExpr => {
+				self.check_var_mutable(&(expr as &ast::IndirectExpr).expr);
+			}
+			ast::CastExpr => {
+				self.check_var_mutable(&(expr as &ast::CastExpr).expr);
+			}
+			ast::ParExpr => {
+				self.check_var_mutable(&(expr as &ast::ParExpr).expr);
+			}
+			ast::UnaryExpr => {
+				self.check_var_mutable(&(expr as &ast::UnaryExpr).right);
+			}
+			ast::ArrayDecompose => {
+				self.check_var_mutable(&(expr as &ast::ArrayDecompose).expr);
+			}
+			ast::TryExpr => {
+				let mut t = expr as &ast::TryExpr;
+				self.check_var_mutable(&t.expr);
+				if (t.has_orelse) {
+					self.check_var_mutable(&t.orelse_val);
+				}
+			}
+			ast::TernaryExpr => {
+				let mut t = expr as &ast::TernaryExpr;
+				if (t.is_comptime) {
+					if (t.comptime_result) {
+						self.check_var_mutable(&t.left);
+					} else {
+						self.check_var_mutable(&t.right);
+					}
+				} else {
+					self.check_var_mutable(&t.left);
+					self.check_var_mutable(&t.right);
+				}
+			}
+			else => {}
+		}
+	}
+}

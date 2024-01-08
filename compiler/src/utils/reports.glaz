@@ -1,0 +1,167 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::{process, math, strings};
+use std::console::{self, eprintln};
+
+use src::tokens;
+
+const MARKER: str = "^";
+const SUPPORT_COLOR: bool = console::can_show_color_on_stderr() and console::can_show_color_on_stdout();
+const SEP: str = blue("     | ");
+const SEP2: str = blue("     = ");
+
+fn color(kind: str, msg: str) str {
+	if (!SUPPORT_COLOR) {
+		return msg;
+	} else switch {
+		kind.contains("error") => return console::red(msg);
+		kind.contains("warning") => return console::yellow(msg);
+		kind.contains("note") => return console::green(msg);
+		kind.contains("help") => return console::white(msg);
+		else => return msg;
+	}
+}
+
+@[inline]
+fn blue(s: str) str {
+	return if (SUPPORT_COLOR) console::bold(console::blue(s)) else s;
+}
+
+@[inline]
+fn bold(s: str) str {
+	return if (SUPPORT_COLOR) console::bold(s) else s;
+}
+
+@[inline]
+fn fmt_sep(v: i32, sep: i32) str {
+	return fmt!("{}{}", " ".repeat(sep - math::count_digits(v)), v);
+}
+
+fn get_marker(kind: str, col: i32, line: str, len: i32) str {
+	let start_column = max(0, min(col - 1, line.len));
+	let end_column = max(0, min((col - 1) + max(0, len), line.len));
+
+	let mut marker = strings::Builder::new(line.len);
+
+	let mut i = 0;
+	while (i < start_column) {
+		if (line[i].is_space()) {
+			marker.write_byte(line[i]);
+			i++;
+		} else {
+			let char_len = line[i].len_utf8();
+			let spaces = " ".repeat(line[i:i + char_len].len_utf8());
+			marker.write_str(spaces);
+			i += char_len;
+		}
+	}
+
+	let underline_len = line[start_column:end_column].len_utf8();
+	marker.write_str(color(kind, MARKER.repeat(underline_len)));
+
+	return marker.to_str();
+}
+
+fn get_offended_line(kind: str, line_str: str, pos: &tokens::Position) str {
+	let mut sb = strings::Builder::new();
+	sb.writeln(SEP);
+	sb.writeln(fmt!("{} {}", blue(fmt!("{} |", fmt_sep(pos.line + 1, 4))), line_str));
+	sb.write_str(fmt!("{}{}", SEP, get_marker(kind, pos.col, line_str, pos.len)));
+	return sb.to_str();
+}
+
+fn get_offended_multiline(kind: str, lines: vec[str], pos: &tokens::Position) str {
+	let mut sb = strings::Builder::new();
+	sb.writeln(SEP);
+	let diff = pos.line2 - pos.line;
+	let mut splitted = false;
+	for (mut i in pos.line...pos.line2) {
+		let line = lines[i];
+		if (i == pos.line) {
+			sb.writeln(
+				fmt!(
+					"{} {}", blue(fmt!("{} -", fmt_sep(i + 1, 4))),
+					line[:pos.col - 1] + color(kind, line[pos.col - 1:])
+				)
+			);
+		} elif (i == pos.line2) {
+			sb.writeln(
+				fmt!(
+					"{} {}", blue(fmt!("{} -", fmt_sep(i + 1, 4))),
+					color(kind, line[:pos.col2]) + line[pos.col2:]
+				)
+			);
+		} else {
+			if (!splitted and diff > 10 and i > pos.line + 3) {
+				sb.writeln(blue(" ---"));
+				i = pos.line2 - 3;
+				splitted = true;
+			}
+			sb.writeln(fmt!("{} {}", blue("  | "), color(kind, line)));
+		}
+	}
+	sb.write_str(SEP);
+	return sb.to_str();
+}
+
+/// Returns a string with the following format:
+/// ```
+/// <position>: <kind>: <msg>
+///   <position.line_number> | <position.line>
+/// ```
+pub fn formatted_report(kind: str, msg: str, pos: &tokens::Position) str {
+	let mut sb = strings::Builder::new();
+
+	sb.write_str(bold(fmt!("{}: ", pos)));
+	sb.write_str(bold(color(kind, fmt!("{}: ", kind))));
+	sb.writeln(bold(msg));
+
+	let src_txt_l = read_file(pos.file).split_into_lines();
+	if (pos.line2 > -1) {
+		sb.write_str(get_offended_multiline(kind, src_txt_l, pos));
+	} else {
+		let line = min(pos.line, src_txt_l.len - 1);
+		sb.write_str(get_offended_line(kind, src_txt_l[line], pos));
+	}
+
+	return sb.to_str();
+}
+
+/// Returns a string with the following format:
+/// ```
+/// <kind>: <msg>
+/// ```
+pub fn small_report(kind: str, msg: str) str {
+	let mut sb = strings::Builder::new();
+	sb.write_str(SEP2);
+	sb.write_str(bold(color(kind, fmt!("{}: ", kind))));
+	sb.write_str(msg.wrap(75, "\n" + SEP));
+	return sb.to_str();
+}
+
+/// Returns a string with the following format:
+/// ```
+/// <kind>: <msg>
+///   <position.line_number> | <position.line>
+/// ```
+pub fn small_report_with_pos(kind: str, msg: str, pos: &tokens::Position) str {
+	let mut sb = strings::Builder::new();
+
+	sb.write_str(SEP2);
+	sb.write_str(bold(fmt!("{}: ", pos)));
+	sb.write_str(bold(color(kind, fmt!("{}: ", kind))));
+	sb.writeln(bold(msg.wrap(75, "\n" + SEP)));
+
+	let src_txt_l = read_file(pos.file).split_into_lines();
+	let line = min(pos.line, src_txt_l.len - 1);
+	sb.write_str(get_offended_line(kind, src_txt_l[line], pos));
+
+	return sb.to_str();
+}
+
+@[noreturn]
+pub fn compiler_error(msg: str) {
+	eprintln(bold(fmt!("{} {}", color("error", "glaz error:"), msg)));
+	process::exit(1);
+}

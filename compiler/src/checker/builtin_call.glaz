@@ -1,0 +1,337 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::path;
+use src::ast;
+
+impl Checker {
+	pub fn check_builtin_call(mut &self, mut expr: &ast::BuiltinCallExpr) ast::Type {
+		expr.typ = ast::VOID_T;
+		let args_len = expr.args.len;
+		switch (expr.name) {
+			"push" => {
+				if (args_len == 2) {
+					let mut arg0 = &expr.args[0];
+					self.check_var_mutable(arg0);
+					let ts = self.check_expr(arg0).ts();
+					if (ts.kind == .Vector) {
+						let elem_typ = (ts.info as &ast::VectorInfo).elem_typ;
+						let t = self.check_expr(&expr.args[1]);
+						try self.check_compatible_types(t, elem_typ) catch {
+							self.error(err.msg, expr.args[1].pos());
+							self.note("in argument `elem` of builtin `push`");
+						};
+					} else {
+						self.error(fmt!("expected vector, found {}", ts.kind), arg0.pos());
+					}
+				} else {
+					self.error(fmt!("expected 2 argument(s), not {}", args_len), &expr.pos);
+				}
+			}
+			"pop" => {
+				if (args_len == 1) {
+					let mut arg0 = &expr.args[0];
+					self.check_var_mutable(arg0);
+					let ts = self.check_expr(arg0).ts();
+					if (ts.kind == .Vector) {
+						expr.typ = (ts.info as &ast::VectorInfo).elem_typ;
+					} else {
+						self.error(fmt!("expected vector, found {}", ts.kind), arg0.pos());
+					}
+				} else {
+					self.error(
+						fmt!("expected 1 argument, not {}, for builtin `pop`", args_len),
+						&expr.pos
+					);
+				}
+			}
+			"extend" => {
+				if (args_len == 2) {
+					let mut arg0 = &expr.args[0];
+					let mut arg1 = &expr.args[1];
+					self.check_var_mutable(arg0);
+					let t = self.check_expr(arg0);
+					let ts = t.ts();
+					let elem = self.check_expr(arg1);
+					if (ts.kind == .Vector) {
+						try self.check_compatible_types(elem, t) catch {
+							self.error(err.msg, arg1.pos());
+							self.note("in argument `elem` of builtin `extend`");
+						};
+					} else {
+						self.error(fmt!("expected vector, found {}", ts.kind), arg0.pos());
+					}
+				} else {
+					self.error(
+						fmt!("expected 2 arguments, not {}, for builtin `extend`", args_len),
+						&expr.pos
+					);
+				}
+			}
+			"fmt" => {
+				if (args_len == 0) {
+					self.error("requires at least a format string argument", &expr.pos);
+				} else {
+					let arg0 = &expr.args[0];
+					if (arg0 is ast::StringLiteral) {
+						let lit = (arg0 as &ast::StringLiteral).lit;
+						let count = lit.count("{}");
+						if (count == 0) {
+							self.error("first argument is not valid", arg0.pos());
+						} elif (args_len - 1 != count) {
+							self.error(
+								fmt!(
+									"{} positional argument(s) in format string, "
+									"but there is {} argument(s)",
+									count,
+									args_len - 1
+								),
+								&expr.pos
+							);
+						} else {
+							for (idx in 1..args_len) {
+								let mut arg = &expr.args[idx];
+								let ts = self.check_expr(arg).ts();
+								if (!ts.has_method("to_str")) {
+									self.error(
+										fmt!(
+											"type `{}` cannot be formatted",
+											ts.qualname()
+										), arg0.pos()
+									);
+									self.note(
+										fmt!(
+											"type `{}` should implement the "
+											"`to_str(&self) str` method",
+											ts.name
+										)
+									);
+								}
+							}
+						}
+					} else {
+						self.error("format argument must be a string literal", arg0.pos());
+					}
+				}
+				expr.typ = self.table.str_t;
+			}
+			"compile_error", "compile_warn" => {
+				if (args_len == 1) {
+					let arg0 = &expr.args[0];
+					if (arg0 is ast::StringLiteral) {
+						let lit = (arg0 as &ast::StringLiteral).lit;
+						if (expr.name == "compile_error") {
+							self.error(lit, &expr.pos);
+							// check unreachable code after error
+							self.scope_returns = true;
+						} else {
+							self.warn(lit, &expr.pos);
+						}
+					} else {
+						self.error("expected a string literal", arg0.pos());
+					}
+				} else {
+					self.error(
+						fmt!("expected 1 argument, not {}, for builtin `{}`", args_len, expr.name),
+						&expr.pos
+					);
+				}
+			}
+			"assert" => {
+				if (args_len == 1 or args_len == 2) {
+					if (self.check_expr(&expr.args[0]).neq(self.table.bool_t)) {
+						self.error(
+							"non-boolean expression used as condition",
+							expr.args[0].pos()
+						);
+					}
+					if (args_len == 2 and expr.args[1] !is ast::StringLiteral) {
+						self.error(
+							"`assert` note should be a literal string",
+							expr.args[1].pos()
+						);
+					}
+				} else {
+					self.error(
+						"expected single boolean expression",
+						&expr.pos
+					);
+				}
+			}
+			"sizeof" => {
+				if (args_len == 1) {
+					_ = self.check_expr(&expr.args[0]);
+					expr.typ = self.table.usize_t;
+				} else {
+					self.error(
+						fmt!("expected 1 argument, not {}, for builtin `sizeof`", args_len),
+						&expr.pos
+					);
+				}
+			}
+			"default" => {
+				if (args_len == 1) {
+					expr.typ = self.check_expr(&expr.args[0]);
+					switch (expr.typ) is {
+						ast::TupleType, ast::ArrayType, ast::MapType => {
+							self.error(
+								fmt!(
+									"cannot use `{}` with builtin `default`",
+									expr.typ.to_ustr()
+								),
+								&expr.pos
+							);
+						}
+						ast::Reference, ast::Pointer, ast::Optional => {
+							self.error("cannot use pointers with builtin `default`", &expr.pos);
+							if (expr.typ is ast::Pointer or expr.typ is ast::Optional) {
+								self.help("use the `null` literal instead");
+							}
+						}
+						else => {
+							let ts = expr.typ.ts();
+							if ((ts.kind == .SumType
+								and !(ts.info as &ast::SumTypeInfo).has_default_expr)
+								or ts.kind == .BoxT) {
+								self.error(
+									fmt!("cannot use `{}` with builtin `default`", ts.name),
+									&expr.pos
+								);
+							}
+						}
+					}
+				} else {
+					self.error(
+						fmt!("expected 1 argument, not {}, for builtin `default`", args_len),
+						&expr.pos
+					);
+				}
+			}
+			"box" => {
+				if (args_len == 1) {
+					expr.typ = ast::Type::new(
+						self.table.gmod.add_or_get_box(
+							self.untyped_to_real_type(self.check_expr(&expr.args[0]))
+						)
+					);
+				} else {
+					self.error(
+						fmt!("expected 1 argument, not {}, for builtin `box`", args_len),
+						&expr.pos
+					);
+				}
+			}
+			"include_str" => {
+				if (args_len == 1) {
+					let arg0 = &expr.args[0];
+					if (arg0 is ast::StringLiteral) {
+						let user_path = (arg0 as &ast::StringLiteral).lit;
+						let path = path::join(path::dirname(self.sf.file), user_path);
+						let p = arg0.pos();
+						if (path::is_dir(path)) {
+							self.error(
+								fmt!("cannot include `{}` (is a directory)", user_path), p
+							);
+						} elif (!path::exists(path)) {
+							self.error(
+								fmt!("cannot include `{}` (does not exist)", user_path), p
+							);
+						}
+					} else {
+						self.error("expected string literal", arg0.pos());
+					}
+				} else {
+					self.error(
+						fmt!("expected 1 argument, not {}, for builtin `include`", args_len),
+						&expr.pos
+					);
+				}
+				expr.typ = self.table.str_t;
+			}
+			"drop" => {
+				if (args_len == 1) {
+					if (self.inside_defer) {
+						self.error("cannot drop values inside `defer` blocks", &expr.pos);
+					} else {
+						self.mark_as_dropped(&expr.args[0]);
+					}
+				} else {
+					self.error(
+						fmt!("expected 1 argument, not {}, for builtin `drop`", args_len),
+						&expr.pos
+					);
+				}
+			}
+			"typeof" => {
+				if (args_len == 1) {
+					_ = self.check_expr(&expr.args[0]);
+					expr.typ = self.table.str_t;
+				} else {
+					self.error(
+						fmt!("expected 1 argument, not {}, for builtin `typeof`", args_len),
+						&expr.pos
+					);
+				}
+			}
+			"breakpoint" => {
+				if (args_len != 0) {
+					self.error(
+						fmt!("expected 0 arguments, not {}, for builtin `breakpoint`", args_len),
+						&expr.pos
+					);
+				}
+			}
+			"unreachable" => {
+				if (args_len != 0) {
+					self.error(
+						fmt!("expected 0 arguments, not {}, for builtin `unreachable`", args_len),
+						&expr.pos
+					);
+				}
+				self.scope_returns = true;
+			}
+			else => self.error(fmt!("unknown builtin function `{}`", expr.name), &expr.name_pos);
+		}
+		return expr.typ;
+	}
+
+	fn mark_as_dropped(mut &self, expr: &ast::Expr) {
+		switch (expr) is {
+			ast::BaseExpr => self.error("cannot drop `base`", expr.pos());
+			ast::SelfExpr => self.error("cannot drop `self`", expr.pos());
+			ast::Ident => {
+				let id = expr as &ast::Ident;
+				if (id.is_obj) {
+					let mut obj = id.obj as &ast::Var;
+					if (!obj.is_local) {
+						self.error("cannot drop a non-local value", &id.pos);
+					} elif (obj.typ is ast::Reference or obj.typ.is_pointer()) {
+						self.error("cannot drop references and pointers", &id.pos);
+					} elif (obj.is_arg) {
+						self.error("cannot drop a argument", &id.pos);
+					} else {
+						if (obj.is_mut) {
+							obj.is_dropped = true;
+							if (!obj.is_used) {
+								obj.is_used = true;
+							}
+							if (!obj.is_changed) {
+								obj.is_changed = true;
+							}
+							obj.lifetime = ast::LifeTime{};
+						} else {
+							self.error(
+								fmt!("cannot drop immutable variable `{}`", id.name),
+								&id.pos
+							);
+						}
+					}
+				} else {
+					self.error(fmt!("`{}` is not a variable", id.name), &id.pos);
+				}
+			}
+			else => self.error("expected a single variable", expr.pos());
+		}
+	}
+
+}

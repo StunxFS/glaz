@@ -1,0 +1,362 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::console::eprintln;
+use std::strings::Suggestion;
+
+use src::ast;
+use src::pref;
+use src::utils;
+use src::tokens;
+
+pub struct Checker {
+	prefs: &pref::Preferences = &pref::Preferences{},
+	mut table: &ast::Table = &ast::Table{},
+
+	mut scope_returns: bool,
+
+	mut inside_extern: bool,
+	mut inside_try: bool,
+	mut inside_unsafe: bool,
+	mut inside_guard_expr: bool,
+	mut inside_impl: bool,
+	mut inside_test: bool,
+	mut inside_defer: bool,
+	mut inside_noreturn_func: bool,
+	mut inside_struct_base_expr: bool,
+
+	mut self_type: ast::Type,
+	mut expected_type: ast::Type,
+
+	mut sf: &ast::SourceFile = &ast::SourceFile{},
+	mut func: &ast::FnDecl = &ast::FnDecl{},
+	mut ctest: &ast::TestDecl = &ast::TestDecl{},
+	mut sym: ast::Symbol,
+	mut mods: str
+}
+
+impl Checker {
+	@[inline]
+	pub fn new(table: &ast::Table, prefs: &pref::Preferences) Box<Checker> {
+		return box!(Checker{
+			table: table,
+			prefs: prefs
+		});
+	}
+
+	pub fn check_files(mut &self, source_files: vec[Box<ast::SourceFile>]) {
+		for (&sf in source_files) {
+			self.check(sf);
+		}
+		self.check_main_fn();
+	}
+
+	pub fn check(mut &self, sf: &ast::SourceFile) {
+		self.sf = sf;
+		self.sym = sf.sym;
+		self.mods = sf.module;
+		self.check_decls(sf.decls);
+		self.check_scope_vars(self.sf.scope);
+	}
+
+	fn check_main_fn(mut &self) {
+		if (self.prefs.build_mode != .Binary or self.prefs.check) {
+			return;
+		}
+		if (let root_mod = self.table.gmod.find(self.prefs.src_name)) {
+			if (let main_fn = root_mod.find("main")) {
+				if (main_fn !is ast::Function) {
+					utils::compiler_error("`main` should be a function");
+				} else {
+					let mfn = main_fn as &ast::Function;
+					self.table.main_has_args = mfn.args.len > 0;
+					if (mfn.ret_typ.neq(ast::VOID_T)) {
+						self.error("function `main` cannot return values", &mfn.pos);
+					}
+					if (mfn.args.len == 1) {
+						let arg = mfn.args[0];
+						if (arg.is_mut) {
+							self.error("executable arguments cannot be mutated ", &arg.pos);
+						} elif (arg.typ.to_str() != "vec[str]") {
+							// TODO: the arguments should be passed as a slice of string,
+							//       not as a vector.
+							self.error("expected `main(args: vec[str])`", &mfn.pos);
+						}
+					} elif (mfn.args.len > 0 and mfn.args.len != 1) {
+						self.error("expected `main(args: vec[str])`", &mfn.pos);
+					}
+				}
+			} else {
+				utils::compiler_error("function `main` not found");
+			}
+		} else utils::compiler_error(
+			fmt!("checker: unexpected bug, src module (`{}`) not found", self.prefs.src_name)
+		);
+	}
+
+	fn check_scope_vars(mut &self, sc: &ast::Scope) {
+		for (obj in sc.objects) {
+			if (obj is ast::Var) {
+				let o = obj as &ast::Var;
+				let kind = if (o.is_arg) "argument" else "variable";
+				if (!o.is_used and o.name[0] != '_') {
+					self.warn(fmt!("{} `{}` declared but never used", kind, o.name), &o.pos);
+					self.help(
+						fmt!(
+							"if this is intentional, prefix it with an underscore: `_{}`", o.name
+						)
+					);
+					self.help("or use the blank identifier (`_`)");
+				} elif (o.is_mut and !o.is_changed) {
+					self.warn(
+						fmt!(
+							"{} `{}` is declared as mutable, but it was never changed",
+							kind, o.name
+						),
+						&o.pos
+					);
+					self.help("remove `mut` from the assignment");
+				}
+			} elif (obj is ast::Label) {
+				let l = obj as &ast::Label;
+				if (!l.is_used) {
+					self.error(fmt!("label `{}` defined and not used", l.name), &l.pos);
+				}
+			}
+		}
+		for (child in sc.childrens) {
+			self.check_scope_vars(child);
+		}
+	}
+
+	fn check_valid_upper_case(mut &self, name: str, kind: str, pos: &tokens::Position) {
+		if (!self.inside_extern and !utils::is_upper_case(name)) {
+			self.check_name_error(kind, name, "upper", pos);
+		}
+	}
+
+	fn check_valid_pascal_case(mut &self, name: str, kind: str, pos: &tokens::Position) {
+		if (!self.inside_extern and !utils::is_pascal_case(name)) {
+			self.check_name_error(kind, name, "pascal", pos);
+		}
+	}
+
+	fn check_valid_snake_case(mut &self, name: str, kind: str, pos: &tokens::Position) {
+		if (!self.inside_extern and !utils::is_snake_case(name)) {
+			self.check_name_error(kind, name, "snake", pos);
+		}
+	}
+
+	@[inline]
+	fn check_name_error(mut &self, kind: str, name: str, case: str, pos: &tokens::Position) {
+		self.error(fmt!("{} `{}` should have a {} case name", kind, name, case), pos);
+	}
+
+	fn check_attributes(mut &self, attrs: &ast::Attrs, level: ast::AttrLevel) {
+		for (name, &attr in attrs.attrs) switch (name) {
+			"special_type" => {
+				if (level != .Struct) {
+					self.error("`special_type` attribute is only valid for structs", &attr.pos);
+				} elif (attr.args.len != 1) {
+					self.error(
+						fmt!("`special_type` attribute expects 1 argument, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"ccode" => {
+				if (!self.inside_extern) {
+					self.error("`ccode` attribute is only valid inside `extern` blocks", &attr.pos);
+				} elif (level == .Field) {
+					self.error(
+						"`ccode` attribute is only valid for structs, enums and functions",
+						&attr.pos
+					);
+				} elif (attr.args.len != 1) {
+					self.error(
+						fmt!("`ccode` attribute expects 1 argument, not {}", attr.args.len),
+						&attr.pos
+					);
+				} else {
+					let arg = attr.args[0];
+					if (arg.name == "cname") {
+						if (arg.expr !is ast::StringLiteral) {
+							self.error("expected string literal", arg.expr.pos());
+						}
+					} else {
+						self.error(fmt!("expected name `cname`, found `{}`", arg.name), &attr.pos);
+					}
+				}
+			}
+			"typedef" => {
+				if (!self.inside_extern) {
+					self.error(
+						"`typedef` attribute is only valid inside `extern` blocks", &attr.pos
+					);
+				} elif (level != .Struct) {
+					self.error("`typedef` attribute is only valid for C structs", &attr.pos);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`typedef` attribute expects 0 arguments, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"copy" => {
+				if (level != .Struct) {
+					self.error(fmt!("`{}` attribute is only valid for structs", name), &attr.pos);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`{}` attribute expects 0 arguments, not {}", name, attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"sealed" => {
+				if (level != .Struct) {
+					self.error("`sealed` attribute is only valid for structs", &attr.pos);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`sealed` attribute expects 0 arguments, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"protected" => {
+				if (level !in vec[ast::AttrLevel]{.Method, .Field}) {
+					self.error(
+						"`protected` attribute is only valid for fields and methods", &attr.pos
+					);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`protected` attribute expects 0 arguments, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"inline" => {
+				if (!level.is_func()) {
+					self.error("`inline` attribute is only valid for functions", &attr.pos);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`inline` attribute expects 0 arguments, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"unsafe" => {
+				if (!level.is_func()) {
+					self.error("`unsafe` attribute is only valid for functions", &attr.pos);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`unsafe` attribute expects 0 arguments, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"deprecated" => {
+				if (!level.is_func()) {
+					self.error("`deprecated` attribute is only valid for functions for now", &attr.pos);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`deprecated` attribute expects 0 arguments, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"noinit" => {
+				if (level !in vec[ast::AttrLevel]{.Struct, .Field}) {
+					self.error("`noinit` attribute is only valid for structs and fields", &attr.pos);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`noinit` attribute expects 0 arguments, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"abstract" => {
+				if (level !in vec[ast::AttrLevel]{.Struct, .Method}) {
+					self.error(
+						"`abstract` attribute is only valid for structs and methods",
+						&attr.pos
+					);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`abstract` attribute expects 0 arguments, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"override", "virtual" => {
+				if (level != .Method) {
+					self.error(fmt!("`{}` attribute is only valid for methods", name), &attr.pos);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`{}` attribute expects 0 arguments, not {}", name, attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			"noreturn" => {
+				if (!level.is_func()) {
+					self.error(fmt!("`{}` attribute is only valid for functions", name), &attr.pos);
+				} elif (attr.args.len != 0) {
+					self.error(
+						fmt!("`noreturn` attribute expects 0 arguments, not {}", attr.args.len),
+						&attr.pos
+					);
+				}
+			}
+			else => self.error(fmt!("unknown attribute: `{}`", name), &attr.pos);
+		}
+	}
+
+	fn check_dup_map_key(mut &self, node: &ast::MapLiteral, key_i: &ast::Expr, i: i32) {
+		if (key_i is ast::StringLiteral) {
+			for (j in 0..i) {
+				let key_j = node.fields[j].key;
+				if (key_j is ast::StringLiteral) {
+					let lit = (key_i as &ast::StringLiteral).lit;
+					if (lit == (key_j as &ast::StringLiteral).lit) {
+						self.error(fmt!("duplicate key \"{}\" in map literal", lit), key_i.pos());
+					}
+				}
+			}
+		}
+	}
+
+	fn error(mut &self, msg: str, pos: &tokens::Position) {
+		eprintln(utils::formatted_report("error", msg, pos));
+		self.table.err_c++;
+	}
+
+	fn warn(mut &self, msg: str, pos: &tokens::Position) {
+		if (self.prefs.is_release) {
+			self.error(msg, pos);
+		} else {
+			eprintln(utils::formatted_report("warning", msg, pos));
+		}
+	}
+
+	@[inline]
+	fn note(&self, msg: str) {
+		eprintln(utils::small_report("note", msg));
+	}
+
+	@[inline]
+	fn note_with_pos(&self, msg: str, pos: &tokens::Position) {
+		eprintln(utils::small_report_with_pos("note", msg, pos));
+	}
+
+	@[inline]
+	fn help(&self, msg: str) {
+		eprintln(utils::small_report("help", msg));
+	}
+
+	fn suggestion(&self, name: str, names: vec[str]) {
+		let suggest = Suggestion::new(name, names).suggest();
+		if (suggest.len > 0) {
+			self.help(suggest);
+		}
+	}
+}

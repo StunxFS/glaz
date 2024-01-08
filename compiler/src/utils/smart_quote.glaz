@@ -1,0 +1,115 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+const INVALID_ESCAPES: vec[u8] = r"({`.".bytes();
+const BACKSLASH: u8 = 92;
+const BACKSLASH_R: u8 = 13;
+const BACKSLASH_N: u8 = 10;
+const DOUBLE_QUOTE: u8 = 34;
+const DOUBLE_ESCAPE: str = "\\\\";
+
+pub fn smart_quote(s: str, raw: bool = false) str {
+	if (s.len == 0) {
+		return "";
+	} elif (s.len < 256) {
+		let mut is_pure = true;
+		for (i in 0..s.len) {
+			let ch = s[i];
+			if ((ch >= 37 and ch <= 90) or (ch >= 95 and ch <= 126)
+				or (ch in vec[u8]{' ', '!', '#', '[', ']'})) {
+				// safe punctuation + digits + big latin letters,
+				// small latin letters + more safe punctuation,
+				// important punctuation exceptions, that are not
+				// placed conveniently in a consequitive span in
+				// the ASCII table.
+				continue;
+			}
+			is_pure = false;
+			break;
+		}
+		if (is_pure) {
+			return s;
+		}
+	}
+
+	let mut result = strings::Builder::new(s.len + 10);
+	let mut pos = -1;
+	// let mut last: u8 = 0;
+	let mut current: u8 = 0;
+	let mut next: u8 = 0;
+	let mut skip_next = false;
+	loop {
+		pos++;
+		if (skip_next) {
+			skip_next = false;
+			pos++;
+		}
+		if (pos >= s.len) break;
+		// last = current;
+		current = s[pos];
+		if (pos + 1 < s.len) {
+			next = s[pos + 1];
+		} else next = 0;
+		if (current == DOUBLE_QUOTE) {
+			current = 0;
+			result.write_byte(BACKSLASH);
+			result.write_byte(DOUBLE_QUOTE);
+			continue;
+		}
+		if (current == BACKSLASH) {
+			if (raw) {
+				result.write_str(DOUBLE_ESCAPE);
+				continue;
+			}
+			if (next == BACKSLASH) {
+				// escaped backslash - keep as is
+				skip_next = true;
+				result.write_str(DOUBLE_ESCAPE);
+				continue;
+			}
+			if (next != 0) {
+				if (raw) {
+					skip_next = true;
+					result.write_str(DOUBLE_ESCAPE);
+					continue;
+				}
+				if (next in INVALID_ESCAPES) {
+					skip_next = true;
+					result.write_byte(next);
+				}
+				// keep all valid escape sequences
+				skip_next = true;
+				result.write_byte(current);
+				result.write_byte(next);
+				continue;
+			}
+		}
+		if (current == BACKSLASH_N) {
+			// keep newlines in string
+			current = 0;
+			result.write_byte(BACKSLASH);
+			result.write_byte('n');
+			continue;
+		}
+		if (current == BACKSLASH_R and next == BACKSLASH_N) {
+			result.write_byte(current);
+			result.write_byte(next);
+			current = 0;
+			skip_next = true;
+			continue;
+		}
+		if (!raw) {
+			if (current == BACKSLASH_R and next == BACKSLASH_N) {
+				// Windows style new line \r\n
+				skip_next = true;
+				result.write_byte(BACKSLASH);
+				result.write_byte('n');
+				continue;
+			}
+		}
+		result.write_byte(current);
+	}
+	return result.to_str();
+}

@@ -1,0 +1,738 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of self source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::{panic, strings};
+use std::console::eprintln;
+
+use src::pref;
+use src::utils;
+use src::tokens::{ self, Kind };
+
+const LF: u8 = 10;
+const CR: u8 = 13;
+const NUM_SEP: u8 = '_';
+
+@[inline]
+fn is_name_char(ch: u8) bool {
+	return ch.is_letter() or ch == '_';
+}
+
+@[inline]
+fn is_nl(ch: u8) bool {
+	return ch == CR or ch == LF;
+}
+
+pub struct Tokenizer {
+	prefs: &pref::Preferences,
+	file: str = "<internal-memory>",
+	text: str,
+	mut pos: i32,
+	mut line: i32,
+	mut last_nl_pos: i32 = -1,
+	mut all_tokens: vec[tokens::Token],
+	mut tidx: i32,
+	mut is_started: bool,
+	mut is_cr_lf: bool,
+	mut eofs: i32,
+	pub mut err_c: i32
+}
+
+impl Tokenizer {
+	pub fn new(text: str, prefs: &pref::Preferences) Box<Tokenizer> {
+		let mut t = box!(Tokenizer{
+			prefs: prefs,
+			text: text
+		});
+		t.init();
+		return t;
+	}
+
+	pub fn new_from_file(path: str, prefs: &pref::Preferences) Box<Tokenizer> {
+		let mut t = box!(Tokenizer{
+			prefs: prefs,
+			file: path,
+			text: utils::read_file(path)
+		});
+		t.init();
+		return t;
+	}
+
+	fn init(mut &self) {
+		self.all_tokens = vec[tokens::Token]::new(0, self.text.len / 3);
+		self.tokenize_remaining_text();
+		self.tidx = 0;
+	}
+
+	fn tokenize_remaining_text(mut &self) {
+		loop {
+			let t = self.__next();
+			push!(self.all_tokens, t);
+			if (t.kind == .EOF) break;
+		}
+	}
+
+	@[inline]
+	fn new_eof_token(&self) tokens::Token {
+		return tokens::Token{
+			kind: .EOF,
+			pos: self.get_pos()
+		};
+	}
+
+	fn end_of_file(mut &self) tokens::Token {
+		self.eofs++;
+		if (self.eofs > 50) {
+			self.line--;
+			panic(fmt!("the end of file `{}` has been reached 50 times already", self.file));
+		}
+		if (self.pos != self.text.len and self.eofs == 1) {
+			self.inc_line_number();
+		}
+		self.pos = self.text.len;
+		return self.new_eof_token();
+	}
+
+	@[inline]
+	pub fn next(mut &self) tokens::Token {
+		return self.buffer_tok();
+	}
+
+	fn buffer_tok(mut &self) tokens::Token {
+		loop {
+			let cidx = self.tidx;
+			self.tidx++;
+			if (cidx >= self.all_tokens.len) {
+				return self.end_of_file();
+			}
+			return self.all_tokens[cidx];
+		}
+		return self.new_eof_token();
+	}
+
+	@[inline]
+	fn cur_char(&self) u8 {
+		return self.text[self.pos];
+	}
+
+	@[inline]
+	fn get_pos(&self) tokens::Position {
+		return tokens::Position{
+			file: self.file,
+			line: self.line,
+			col: self.current_column(),
+			pos: self.pos,
+			len: 1
+		};
+	}
+
+	@[inline]
+	fn current_column(&self) i32 {
+		return self.pos - self.last_nl_pos;
+	}
+
+	fn ignore_line(mut &self) {
+		self.eat_to_end_of_line();
+		self.inc_line_number();
+	}
+
+	@[inline]
+	fn eat_to_end_of_line(mut &self) {
+		while (self.pos < self.text.len and self.cur_char() != LF) self.pos++;
+	}
+
+	fn inc_line_number(mut &self) {
+		self.last_nl_pos = utils::min(self.text.len - 1, self.pos);
+		if (self.is_cr_lf) self.last_nl_pos++;
+		self.line++;
+	}
+
+	fn skip_whitespace(mut &self) {
+		while (self.pos < self.text.len) {
+			let c = self.cur_char();
+			if (c == 8) {
+				self.pos++;
+				continue;
+			}
+			if (!(c == 32 or (c > 8 and c < 14) or (c == 0x85) or (c == 0xA0))) return;
+			if (self.pos + 1 < self.text.len and c == CR and self.look_ahead(1) == LF) {
+				self.is_cr_lf = true;
+			}
+			if (is_nl(c) and !(self.pos > 0 and self.text[self.pos - 1] == CR and c == LF)) {
+				self.inc_line_number();
+			}
+			self.pos++;
+		}
+	}
+
+	fn expect(&self, want: str, start_pos: i32) bool {
+		let end_pos = start_pos + want.len;
+		if (start_pos < 0 or end_pos < 0 or start_pos >= self.text.len
+			or end_pos > self.text.len) {
+			return false;
+		}
+		for (pos in start_pos..end_pos) {
+			if (self.text[pos] != want[pos - start_pos]) return false;
+		}
+		return true;
+	}
+
+	pub fn peek_token(&self, n: i32) tokens::Token {
+		let idx = self.tidx + n;
+		if (idx >= self.all_tokens.len) {
+			return self.new_eof_token();
+		}
+		return self.all_tokens[idx];
+	}
+
+	@[inline]
+	fn look_ahead(&self, n: i32) u8 {
+		return if (self.pos + n < self.text.len) self.text[self.pos + n] else 0;
+	}
+
+	fn read_ident(mut &self) str {
+		let start = self.pos;
+		self.pos++;
+
+		while (self.pos < self.text.len) {
+			let c = self.cur_char();
+			if (!(is_name_char(c) or c.is_digit())) break;
+			self.pos++;
+		}
+
+		let lit = self.text[start:self.pos];
+		self.pos--; // fix pos
+		return lit;
+	}
+
+	fn read_hex_number(mut &self) str {
+		let start = self.pos;
+		self.pos += 2; // skip '0x'
+		if (self.pos < self.text.len and self.cur_char() == NUM_SEP) {
+			self.error("separator `_` is only valid between digits in a numeric literal");
+		}
+
+		while (self.pos < self.text.len) {
+			let ch = self.cur_char();
+			if (ch == NUM_SEP and self.text[self.pos - 1] == NUM_SEP) {
+				self.error("cannot use `_` consecutively in a numeric literal");
+			}
+			if (!ch.is_hex_digit() and ch != NUM_SEP) {
+				if (!ch.is_letter()) {
+					break;
+				} else {
+					self.error(
+						fmt!(
+							"this hexadecimal number has unsuitable digit `{}`",
+							self.cur_char().to_ascii_str()
+						)
+					);
+				}
+			}
+			self.pos++;
+		}
+
+		if (self.text[self.pos - 1] == NUM_SEP) {
+			self.error("cannot use `_` at the end of a numeric literal");
+		}
+
+		let lit = self.text[start:self.pos];
+		self.pos--; // fix pos
+		return lit;
+	}
+
+	fn read_bin_number(mut &self) str {
+		let start = self.pos;
+		self.pos += 2; // skip '0b'
+		if (self.pos < self.text.len and self.cur_char() == NUM_SEP) {
+			self.error("separator `_` is only valid between digits in a numeric literal");
+		}
+
+		while (self.pos < self.text.len) {
+			let ch = self.cur_char();
+			if (ch == NUM_SEP and self.text[self.pos - 1] == NUM_SEP) {
+				self.error("cannot use `_` consecutively in a numeric literal");
+			}
+
+			if (!ch.is_bin_digit() and ch != NUM_SEP) {
+				if (!ch.is_digit() and !ch.is_letter()) {
+					break;
+				} else {
+					self.error(
+						fmt!(
+							"this binary number has unsuitable digit `{}`",
+							self.cur_char().to_ascii_str()
+						)
+					);
+				}
+			}
+			self.pos++;
+		}
+
+		if (self.text[self.pos - 1] == NUM_SEP) {
+			self.error("cannot use `_` at the end of a numeric literal");
+		}
+
+		let lit = self.text[start:self.pos];
+		self.pos--; // fix pos
+		return lit;
+	}
+
+	fn read_dec_number(mut &self) str {
+		let start = self.pos;
+		if (self.pos < self.text.len and self.cur_char() == NUM_SEP) {
+			self.error("separator `_` is only valid between digits in a numeric literal");
+		}
+
+		while (self.pos < self.text.len) {
+			let ch = self.cur_char();
+			if (ch == NUM_SEP and self.text[self.pos - 1] == NUM_SEP) {
+				self.error("cannot use `_` consecutively in a numeric literal");
+			}
+			if (!ch.is_digit() and ch != NUM_SEP) {
+				if (!ch.is_letter() or ch in vec[u8]{'e', 'E'}) {
+					break;
+				} else {
+					self.error(
+						fmt!(
+							"this number has unsuitable digit `{}`",
+							self.cur_char().to_ascii_str()
+						)
+					);
+				}
+			}
+			self.pos++;
+		}
+
+		if (self.text[self.pos - 1] == NUM_SEP) {
+			self.error("cannot use `_` at the end of a numeric literal");
+		}
+
+		// fractional part
+		if (self.pos < self.text.len and self.text[self.pos] == '.') {
+			self.pos++;
+			if (self.pos < self.text.len) {
+				// 16.6, 16.6.to_str()
+				if (self.text[self.pos].is_digit()) {
+					while (self.pos < self.text.len) {
+						let c = self.cur_char();
+						if (!c.is_digit()) {
+							if (!c.is_letter() or c in vec[u8]{'e', 'E'}) {
+								// 16.6.to_str()
+								break;
+							} else {
+								self.error(
+									fmt!("this number has unsuitable digit `{}`",
+									c.to_ascii_str())
+								);
+							}
+						}
+						self.pos++;
+					}
+				} elif (self.cur_char() == '.') {
+					// 4.. a range
+					self.pos--;
+				} elif (self.cur_char() in vec[u8]{'e', 'E'}) {
+					// 6.e6
+				} elif (self.cur_char().is_letter()) {
+					// 16.to_str()
+					self.pos--;
+				} else {
+					// 6.
+					self.pos--;
+					self.error("float literals should have a digit after the decimal point");
+				}
+			}
+		}
+		// exponential part
+		if (self.pos < self.text.len and self.cur_char() in vec[u8]{'e', 'E'}) {
+			self.pos++;
+			if (self.pos < self.text.len and self.cur_char() in vec[u8]{'-', '+'}) {
+				self.pos++;
+			}
+			while (self.pos < self.text.len) {
+				let c = self.cur_char();
+				if (!c.is_digit()) {
+					if (!c.is_letter()) {
+						// 6e6.to_str()
+						break;
+					} else {
+						self.error(
+							fmt!("this number has unsuitable digit `{}`", c.to_ascii_str()));
+					}
+				}
+				self.pos++;
+			}
+		}
+		let lit = self.text[start:self.pos];
+		self.pos--; // fix pos
+		return lit;
+	}
+
+	fn read_number(mut &self) str {
+		switch {
+			self.expect("0x", self.pos) => return self.read_hex_number();
+			self.expect("0b", self.pos) => return self.read_bin_number();
+			else => return self.read_dec_number();
+		}
+	}
+
+	fn read_char(mut &self) str {
+		let mut len, start = 0, self.pos;
+		let backslash = b'\\';
+
+		loop {
+			self.pos++;
+			if (self.pos >= self.text.len) break;
+			if (self.cur_char() != backslash) len++;
+			let double_slash = self.expect("\\\\", self.pos - 2);
+			if (self.cur_char() == '\'' and (self.text[self.pos-1] != backslash or double_slash)) {
+				if (double_slash) len++;
+				break;
+			}
+		}
+		len--;
+
+		let ch = self.text[start + 1:self.pos];
+		if (len != 1) {
+			if (len > 1 and ch.len_utf8() > 1) {
+				self.error("character literal may only contain one codepoint");
+				self.help("if you meant to write a string literal, use double quotes");
+			} elif (len == 0) self.error("empty character literal");
+		}
+		return ch;
+	}
+
+	fn read_string(mut &self) str {
+		let start, start_char = self.pos, self.cur_char();
+		let backslash = b'\\';
+		let mut backslash_count = if (start_char == backslash) 1 else 0;
+		let is_raw = self.pos > 0 and self.text[self.pos - 1] == 'r';
+		let mut n_cr_chars = 0;
+
+		loop {
+			self.pos++;
+			if (self.pos >= self.text.len) {
+				self.error("unfinished string literal");
+				return "";
+			}
+			let c = self.cur_char();
+			if (c == backslash) backslash_count += 1;
+			// end of string
+			if (c == '"' and (is_raw or backslash_count % 2 == 0)) {
+				break; // handle "\\" at the end
+			}
+			if (c == CR) n_cr_chars++;
+			if (c == LF) self.inc_line_number();
+			if (c != backslash) backslash_count = 0;
+		}
+
+		let mut lit = "";
+		if (start <= self.pos) {
+			lit = self.text[start + 1:self.pos];
+			if (n_cr_chars > 0) {
+				lit = lit.replace("\r", "");
+			}
+			if (lit.contains("\\\n")) {
+				lit = self.trim_slash_line_break(lit);
+			}
+		}
+		return lit;
+	}
+
+	fn trim_slash_line_break(&self, s: str) str {
+		let mut start, mut ret_str = 0, s;
+		loop {
+			let idx = ret_str.index_after("\\\n", start);
+			if (idx != -1) {
+				ret_str = ret_str[:idx] + ret_str[idx + 2:].trim_left(" \n\t\v\f\r");
+				start = idx;
+			} else break;
+		}
+		return ret_str;
+	}
+
+	fn num_lit_without_sep(&self, lit: str) str {
+		if (!lit.contains("_")) {
+			return lit;
+		}
+		let mut sb = strings::Builder::new(lit.len - lit.count("_"));
+		for (ch in lit) {
+			if (ch != '_') {
+				sb.write_byte(ch);
+			}
+		}
+		return sb.to_str();
+	}
+
+	@[inline]
+	fn new_token(mut &self, kind: Kind, lit: str = "", len: i32 = 1) tokens::Token {
+		self.tidx++;
+		return tokens::Token::new(kind, tokens::Position{
+			file: self.file,
+			line: if (kind == .CHash) self.line - 1 else self.line,
+			col: utils::max(1, self.current_column() - len + 1),
+			pos: self.pos - len + 1,
+			len: len
+		}, lit);
+	}
+
+	fn __next(mut &self) tokens::Token {
+		loop {
+			if (self.is_started) {
+				self.pos++;
+			} else self.is_started = true;
+
+			self.skip_whitespace();
+			if (self.pos >= self.text.len) {
+				return self.new_eof_token();
+			}
+
+			let ch, nextc = self.cur_char(), self.look_ahead(1);
+
+			if (is_name_char(ch)) {
+				let lit = self.read_ident();
+				return self.new_token(tokens::Token::lookup(lit), lit, lit.len);
+			} elif (ch.is_digit() or (ch == '.' and nextc.is_digit())) {
+				// decimals with 0 prefix
+				let mut start_pos = self.pos;
+				while (start_pos < self.text.len and self.text[start_pos] == '0') {
+					start_pos++;
+				}
+
+				let mut prefix_zero_num = start_pos - self.pos;
+				if (start_pos == self.text.len or (ch == '0' and !self.text[start_pos].is_digit())) {
+					prefix_zero_num--;
+				}
+				self.pos += prefix_zero_num;
+
+				let lit = self.read_number();
+				return self.new_token(.Number, self.num_lit_without_sep(lit), lit.len);
+			}
+
+			// delimiters and operators
+			switch (ch) {
+				'+' => {
+					if (nextc == '+') {
+						self.pos++;
+						return self.new_token(.Inc, len=2);
+					} elif (nextc == '=') {
+						self.pos++;
+						return self.new_token(.PlusAssign, len=2);
+					}
+					return self.new_token(.Plus);
+				}
+				'-' => {
+					if (nextc == '-') {
+						self.pos++;
+						return self.new_token(.Dec, len=2);
+					} elif (nextc == '=') {
+						self.pos++;
+						return self.new_token(.MinusAssign, len=2);
+					}
+					return self.new_token(.Minus);
+				}
+				'*' => {
+					if (nextc == '=') {
+						self.pos++;
+						return self.new_token(.MultAssign, len=2);
+					}
+					return self.new_token(.Mult);
+				}
+				'/' => {
+					if (nextc == '=') {
+						self.pos++;
+						return self.new_token(.DivAssign, len=2);
+					} elif (nextc == '/') {
+						// let start_pos = self.pos;
+						self.ignore_line();
+						if (self.text[self.pos - 1] != CR) {
+							self.pos--;
+							self.line--;
+						}
+						continue;
+					} elif (nextc == '*') {
+						let start_pos = self.pos;
+						self.pos++;
+						let mut nest_count = 1;
+						while (nest_count > 0 and self.pos < self.text.len - 1) {
+							self.pos++;
+							if (self.cur_char() == LF) {
+								self.inc_line_number();
+								continue;
+							}
+							if (self.expect("/*", self.pos)) {
+								nest_count++;
+								continue;
+							}
+							if (self.expect("*/", self.pos)) {
+								nest_count--;
+							}
+						}
+						self.pos++;
+						if (self.pos >= self.text.len) {
+							self.pos = start_pos;
+							self.error("comment not terminated");
+							break;
+						}
+						continue;
+					}
+					return self.new_token(.Div);
+				}
+				'%' => {
+					if (nextc == '=') {
+						self.pos++;
+						return self.new_token(.ModAssign, len=2);
+					}
+					return self.new_token(.Mod);
+				}
+				'=' => {
+					if (nextc == '=') {
+						self.pos++;
+						return self.new_token(.Eq, len=2);
+					} elif (nextc == '>') {
+						self.pos++;
+						return self.new_token(.Arrow, len=2);
+					}
+					return self.new_token(.Assign);
+				}
+				'<' => {
+					if (nextc == '=') {
+						self.pos++;
+						return self.new_token(.Le, len=2);
+					}
+					return self.new_token(.Lt);
+				}
+				'>' => {
+					if (nextc == '=') {
+						self.pos++;
+						return self.new_token(.Ge, len=2);
+					}
+					return self.new_token(.Gt);
+				}
+				'.' => {
+					if (nextc == '.' and self.look_ahead(2) == '.') {
+						self.pos += 2;
+						return self.new_token(.Ellipsis, len=3);
+					} elif (nextc == '.') {
+						self.pos++;
+						return self.new_token(.DotDot, len=2);
+					}
+					return self.new_token(.Dot);
+				}
+				',' => return self.new_token(.Comma);
+				':' => {
+					if (nextc == ':') {
+						self.pos++;
+						return self.new_token(.DoubleColon, len=2);
+					}
+					return self.new_token(.Colon);
+				}
+				';' => return self.new_token(.Semicolon);
+				'?' => return self.new_token(.Question);
+				'@' => {
+					if (nextc == '[') { // attributes
+						return self.new_token(.At);
+					}
+					self.pos++;
+					let keyword = self.read_ident();
+					if (!tokens::Token::is_key(keyword)) {
+						self.error(fmt!("expected keyword, found `{}`", keyword));
+					}
+					return self.new_token(.Name, keyword, keyword.len);
+				}
+				'#' => {
+					let start = self.pos + 1;
+					self.ignore_line();
+					let line = self.text[start:self.pos].trim_space();
+					return self.new_token(.CHash, line, line.len + 1);
+				}
+				'$' => return self.new_token(.Dollar);
+				'&' => {
+					if (nextc == '=') {
+						self.pos++;
+						return self.new_token(.AmpAssign, len=2);
+					}
+					return self.new_token(.Amp);
+				}
+				'!' => {
+					let is_s_or_n = self.look_ahead(2) in vec[u8]{'s', 'n'};
+					if (nextc == 'i' and is_s_or_n and self.look_ahead(3).is_space()) {
+						self.pos += 2;
+						let ch2 = self.cur_char();
+						if (ch2 == 's') {
+							return self.new_token(.KeyNotIs, len=2);
+						} elif (ch2 == 'n') {
+							return self.new_token(.KeyNotIn, len=2);
+						}
+					} elif (nextc == '=') {
+						self.pos++;
+						return self.new_token(.Ne, len=2);
+					}
+					return self.new_token(.Bang);
+				}
+				'|' => {
+					if (nextc == '=') {
+						self.pos++;
+						return self.new_token(.PipeAssign, len=2);
+					}
+					return self.new_token(.Pipe);
+				}
+				'~' => return self.new_token(.BitNot);
+				'^' => {
+					if (nextc == '=') {
+						self.pos++;
+						return self.new_token(.XorAssign, len=2);
+					}
+					return self.new_token(.Xor);
+				}
+				'{' => return self.new_token(.Lbrace);
+				'}' => return self.new_token(.Rbrace);
+				'[' => return self.new_token(.Lbracket);
+				']' => return self.new_token(.Rbracket);
+				'(' => return self.new_token(.Lparen);
+				')' => return self.new_token(.Rparen);
+				'\'' => {
+					let lit = self.read_char();
+					return self.new_token(.Char, lit, lit.len + 2);
+				}
+				'"' => {
+					let lit = self.read_string();
+					return self.new_token(.String, lit, lit.len + 2);
+				}
+				else => {
+					self.invalid_character();
+					break;
+				}
+			}
+		}
+		return self.new_eof_token();
+	}
+
+	fn invalid_character(mut &self) {
+		let len = self.text[self.pos].len_utf8();
+		let end = utils::min(self.pos + len, self.text.len);
+		self.error(fmt!("invalid character: `{}`", self.text[self.pos:end]));
+		self.pos += len;
+	}
+
+	@[inline]
+	fn error(mut &self, msg: str, pos: &tokens::Position = &self.get_pos()) {
+		eprintln(utils::formatted_report("error", msg, pos));
+		self.err_c++;
+	}
+
+	@[inline]
+	fn warn(&self, msg: str, pos: &tokens::Position = &self.get_pos()) {
+		eprintln(utils::formatted_report("warning", msg, pos));
+	}
+
+	@[inline]
+	fn note(&self, msg: str) {
+		eprintln(utils::small_report("note", msg));
+	}
+
+	@[inline]
+	fn help(&self, msg: str) {
+		eprintln(utils::small_report("help", msg));
+	}
+}

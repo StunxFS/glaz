@@ -1,0 +1,219 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+pub struct Table {
+	pub mut gmod: Module,
+	pub mut cmod: Module,
+
+	pub mut main_has_args: bool,
+
+	pub mut err_c: i32,
+
+	pub mut cflags: vec[str],
+	pub mut objects: vec[str],
+	pub mut cfiles_to_compile: vec[str],
+
+	// The builtin types.
+	pub mut untyped_int_t: Type,
+	pub mut untyped_float_t: Type,
+	pub mut bool_t: Type,
+	pub mut i8_t: Type,
+	pub mut i16_t: Type,
+	pub mut i32_t: Type,
+	pub mut i64_t: Type,
+	pub mut isize_t: Type,
+	pub mut u8_t: Type,
+	pub mut u16_t: Type,
+	pub mut u32_t: Type,
+	pub mut u64_t: Type,
+	pub mut usize_t: Type,
+	pub mut f32_t: Type,
+	pub mut f64_t: Type,
+	pub mut rune_t: Type,
+	pub mut charptr_t: Type,
+	pub mut rawptr_t: Type,
+	pub mut u8ptr_t: Type,
+	pub mut str_t: Type,
+	pub mut null_t: Type,
+
+	// These types are special, that is, they are used internally by
+	// the compiler for `String`, `map`, `vec`, etc.
+	pub mut vec_type: Symbol,
+	pub mut has_vec_type: bool,
+
+	pub mut map_type: Symbol,
+	pub mut has_map_type: bool,
+
+	pub mut string_type: Symbol,
+	pub mut has_string_type: bool,
+
+	pub mut error_type: Symbol,
+	pub mut has_error_type: bool
+}
+
+impl Table {
+	@[inline]
+	pub fn new() Box<Table> {
+		return box!(Table{
+			gmod: Module{
+				name: "<global-module>",
+				scope: Scope::new()
+			}
+		});
+	}
+
+	@[inline]
+	pub fn register_c_mod(mut &self) {
+		self.cmod = Module{
+			name: "C",
+			scope: Scope::new()
+		};
+	}
+
+	pub fn register_builtin_types(mut &self) {
+		self.untyped_int_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "untyped_int",
+				gname: "untyped_int",
+				kind: .UntypedInt
+			})
+		};
+		self.untyped_float_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "untyped_float",
+				gname: "untyped_float",
+				kind: .UntypedFloat
+			})
+		};
+		self.bool_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "bool",
+				gname: "bool",
+				kind: .Bool
+			})
+		};
+		self.i8_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "i8",
+				gname: "i8",
+				kind: .I8
+			})
+		};
+		self.i16_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "i16",
+				gname: "i16",
+				kind: .I16
+			})
+		};
+		self.i32_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "i32",
+				gname: "i32",
+				kind: .I32
+			})
+		};
+		self.i64_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "i64",
+				gname: "i64",
+				kind: .I64
+			})
+		};
+		self.isize_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "isize",
+				gname: "isize",
+				kind: .Isize
+			})
+		};
+		self.u8_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "u8",
+				gname: "u8",
+				kind: .U8
+			})
+		};
+		self.u16_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "u16",
+				gname: "u16",
+				kind: .U16
+			})
+		};
+		self.u32_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "u32",
+				gname: "u32",
+				kind: .U32
+			})
+		};
+		self.u64_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "u64",
+				gname: "u64",
+				kind: .U64
+			})
+		};
+		self.usize_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "usize",
+				gname: "usize",
+				kind: .Usize
+			})
+		};
+		self.f32_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "f32",
+				gname: "f32",
+				kind: .F32
+			})
+		};
+		self.f64_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "f64",
+				gname: "f64",
+				kind: .F64
+			})
+		};
+		self.rune_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "rune",
+				gname: "rune",
+				kind: .Rune
+			})
+		};
+		self.charptr_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "charptr",
+				gname: "charptr",
+				kind: .Charptr
+			})
+		};
+		self.rawptr_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "rawptr",
+				gname: "rawptr",
+				kind: .Rawptr
+			})
+		};
+		self.u8ptr_t = self.u8_t.ptr();
+		self.str_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "str",
+				gname: "std__Str",
+				module: "std",
+				kind: .Str
+			})
+		};
+
+		// NOTE: this is not a type.
+		self.null_t = SimpleType{
+			typ_s: self.gmod.add_or_get_type_symbol(TypeSymbol{
+				name: "null",
+				gname: "null",
+				kind: .Null
+			})
+		};
+	}
+}

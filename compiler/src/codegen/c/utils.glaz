@@ -1,0 +1,344 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+use src::utils;
+use src::ast::{self, TypeKind};
+
+impl Gen {
+    fn escape_c_name(&self, lit: str) str {
+        if (lit in C_RESERVED_WORDS) {
+            return "_glaz__" + lit;
+        }
+        return lit;
+    }
+
+    fn panic(mut &self, msg: str) {
+        self.writeln(fmt!("std__panic(_SLIT(\"{}\"));", utils::smart_quote(msg)));
+    }
+
+    fn receiver(mut &self, rec_typ: ast::Type, rec: ast::Expr) {
+        let rec_expr_typ = rec.typ();
+        self.write("(");
+        if (rec_typ is ast::Reference) {
+            if (rec_expr_typ is ast::Reference or rec_expr_typ is ast::Optional) {
+                self.gen_expr(rec);
+            } else {
+                self.ref(rec);
+            }
+        } else {
+            let ts = rec_expr_typ.ts();
+            if (ts.kind == .BoxT) {
+                self.gen_expr(rec);
+            } else {
+                if (rec_expr_typ is ast::Reference) {
+                    self.write("*");
+                }
+                self.gen_expr(rec);
+            }
+        }
+        self.write(")");
+    }
+
+    fn box_inherit(mut &self, expr: ast::Expr, cast_to_typ: ast::Type) {
+        self.write("CAST(");
+        self.gen_expr(expr);
+        self.write(fmt!(", {})", cast_to_typ.to_cstr()));
+    }
+
+    fn ref(mut &self, expr_: ast::Expr) {
+        let old_ir = self.inside_ref;
+        self.inside_ref = true;
+        let expr = expr_.clear();
+        switch (expr) is {
+            ast::IndexExpr => {
+                let index_expr = expr as &ast::IndexExpr;
+                let left_typ = index_expr.left.typ();
+                let ts = left_typ.ts();
+                let ty_ts = index_expr.typ.ts();
+                switch {
+                   ty_ts.kind == .Slice => {
+                        self.write(fmt!("ADDR({}, (", ty_ts.gname));
+                        self.gen_expr(index_expr);
+                        self.write("))");
+                    }
+                    left_typ.is_pointer() => {
+                        self.write("&");
+                        self.gen_expr(index_expr);
+                    }
+                    ts.kind in vec[TypeKind]{.Vector, .Array} if (
+                        index_expr.index !is ast::RangeExpr
+                    ) => {
+                        self.write("&");
+                        self.gen_expr(index_expr);
+                    }
+                    else => {
+                        let cstr = expr.typ().to_cstr();
+                        self.write(fmt!("ADDR({}, (", cstr));
+                        self.gen_expr(expr);
+                        self.write("))");
+                    }
+                }
+            }
+            ast::Ident, ast::SelfExpr, ast::SelectorExpr, ast::StructLiteral => {
+                let ts = expr.typ().ts();
+                if (ts.kind == .BoxT) {
+                    self.gen_expr(expr);
+                } else {
+                    self.write("&");
+                    self.gen_expr(expr);
+                }
+            }
+            ast::CastExpr => {
+                self.gen_expr(expr);
+            }
+            else => {
+                let cstr = expr.typ().to_cstr();
+                self.write(fmt!("ADDR({}, (", cstr));
+                self.gen_expr(expr);
+                self.write("))");
+            }
+        }
+        self.inside_ref = old_ir;
+    }
+
+    fn default_value(mut &self, typ: ast::Type) {
+        let ts = typ.ts();
+        switch {
+            typ is ast::Reference or typ is ast::Pointer or typ is ast::Optional,
+            ts.kind == .Rawptr => {
+                self.write("NULL");
+            }
+            typ.is_int() => self.write("0");
+            typ.is_float() => self.write("0.0");
+            else => switch (ts.kind) {
+	            .Bool => self.write("false");
+	            .Str => self.write("_SLIT0");
+	            .Alias => self.default_value((ts.info as &ast::AliasInfo).parent);
+	            .Enum => self.write(fmt!("CAST(0, {})", ts.gname));
+                .Struct => {
+	                self.write("(");
+	                if (ts.info is ast::StructInfo) {
+	                    let info = ts.info as &ast::StructInfo;
+	                    if (info.is_extern and !info.is_typedef) {
+	                        self.write("struct ");
+	                    }
+	                }
+	                self.write(ts.gname);
+	                self.writeln("){");
+	                self.indent++;
+                    if (ts.info is ast::StructInfo) {
+                        if (let base_ts = (ts.info as &ast::StructInfo).base_ts()) {
+                            // init inherited fields ;)
+                            self.init_inherited_fields(base_ts);
+                        }
+                    }
+	                for (f in ts.fields) {
+	                    self.write(fmt!(".{} = ", f.name));
+	                    if (f.has_default_expr) {
+	                        self.gen_expr_with_cast(f.default_expr, f.typ);
+	                    } else {
+	                        self.default_value(f.typ);
+	                    }
+	                    self.writeln(", ");
+	                }
+	                self.indent--;
+	                self.write("}");
+	            }
+	            .Vector => {
+	                let styp = (ts.info as &ast::VectorInfo).elem_typ.to_cstr();
+	                self.write(fmt!("std__Vec__new_with_init(0, 0, 0, sizeof({}))", styp));
+	            }
+	            .Map => {
+	                let styp = (ts.info as &ast::MapInfo).val_typ.to_cstr();
+	                self.write(fmt!("std__Map__new(sizeof({}))", styp));
+	            }
+	            .Tuple => {
+	                self.write(fmt!("(({}){", ts.gname));
+	                for (i, f in (ts.info as &ast::TupleInfo).fields) {
+	                    self.write(fmt!(".s{} = ", i + 1));
+	                    self.default_value(f);
+	                    self.write(", ");
+	                }
+	                self.write("})");
+	            }
+	            .SumType => {
+                    let info = ts.info as &ast::SumTypeInfo;
+                    if (info.has_default_expr) {
+                        self.gen_expr_with_cast(info.default_expr, ast::Type::new(ts));
+                    } else {
+                        self.write(fmt!("(({}){0})", ts.gname));
+                    }
+	            }
+	            .Array => self.write(fmt!("(({}){0})", ts.gname));
+	            else => {}
+            }
+        }
+    }
+
+    fn sort_structs(&self, tss: vec[&ast::TypeSymbol]) vec[&ast::TypeSymbol] {
+        let mut dg = utils::DepGraph::new();
+        let mut typ_names = vec[str]::new();
+        for (ty in tss) {
+            push!(typ_names, ty.gname);
+        }
+        for (t in tss) {
+            let mut field_deps = vec[str]::new();
+            switch (t.kind) {
+                .BoxT => {
+                    let dep = "std____Box";
+                    if (dep in typ_names) {
+                        push!(field_deps, dep);
+                    }
+                }
+                .Array => {
+                    let i = t.info as &ast::ArrayInfo;
+                    let dep = i.elem_typ.ts().gname;
+                    if (dep in typ_names) {
+                        push!(field_deps, dep);
+                    }
+                }
+                .Vector => {
+                    if ("std__Vec" in typ_names) {
+                        push!(field_deps, "std__Vec");
+                    }
+                }
+                .Slice => {
+                    if ("std__Slice" in typ_names) {
+                        push!(field_deps, "std__Slice");
+                    }
+                }
+                .Map => {
+                    let m = t.info as &ast::MapInfo;
+                    let dep = m.val_typ.ts().gname;
+                    if (dep in typ_names) {
+                        push!(field_deps, dep);
+                    }
+                }
+                .Alias => {
+                    let a = t.info as &ast::AliasInfo;
+                    let dep = a.parent.ts().gname;
+                    if (dep in typ_names) {
+                        push!(field_deps, dep);
+                    }
+                }
+                .Tuple => {
+                    let ti = t.info as &ast::TupleInfo;
+                    for (f in ti.fields) {
+                        let dep = f.ts().gname;
+                        if (dep !in typ_names or dep in field_deps or f is ast::Reference) {
+                            continue;
+                        }
+                        push!(field_deps, dep);
+                    }
+                }
+                .Struct => {
+                    let si = t.info as &ast::StructInfo;
+                    if (let base_ts = si.base_ts()) {
+                        push!(field_deps, base_ts.gname);
+                    }
+                    for (f in t.fields) {
+                        let tt = f.typ;
+                        let dep = tt.ts().gname;
+                        if (dep !in typ_names or dep in field_deps
+                            or (tt is ast::Optional or tt is ast::Pointer)) {
+                            continue;
+                        }
+                        push!(field_deps, dep);
+                    }
+                }
+                else => {}
+            }
+            dg.add(t.gname, field_deps);
+        }
+        let dg_sorted = dg.resolve();
+        if (!dg_sorted.acyclic) {
+            // this should never be displayed as the error is handled by the `resolver`
+            utils::compiler_error(
+                "from Gen::sort_structs(): the following structs form a dependency cycle:\n"
+                    + dg_sorted.display_cycles()
+            );
+        }
+        let mut types_sorted = vec[&ast::TypeSymbol]::new();
+        for (node in dg_sorted.nodes) {
+            for (ts in tss) {
+                if (ts.gname == node.name) {
+                    push!(types_sorted, ts);
+                }
+            }
+        }
+        return types_sorted;
+    }
+
+    fn init_inherited_fields(mut &self, base_ts: &ast::TypeSymbol) {
+        let base_info = base_ts.info as &ast::StructInfo;
+        self.writeln(fmt!(".base = ({}){", base_ts.gname));
+        self.indent++;
+        if (let bts = base_info.base_ts()) {
+            self.init_inherited_fields(bts);
+        }
+        for (&f in base_ts.fields) {
+            self.write(fmt!(".{} = ", self.escape_c_name(f.name)));
+            if (f.has_default_expr) {
+                self.gen_expr_with_cast(f.default_expr, f.typ);
+            } else {
+                self.default_value(f.typ);
+            }
+            self.writeln(",");
+        }
+        self.indent--;
+        self.writeln("},");
+    }
+
+    fn gen_cast_utils(mut &self, mut ts: &ast::TypeSymbol) {
+        if (!ts.has_cast_utils) {
+            ts.has_cast_utils = true;
+            self.helpers_definitions.writeln(
+                fmt!("{}* _upcast_{}(rawptr val, i32 hash);", ts.gname, ts.gname)
+            );
+            self.helpers_definitions.writeln(
+                fmt!("{}* _downcast_{}({}* val, i32 hash);", ts.gname, ts.gname, ts.gname)
+            );
+            if (self.prefs.build_mode == .Library) return;
+
+            let mut sb = strings::Builder::new();
+            sb.writeln(fmt!("{}* _upcast_{}(rawptr val, i32 hash) {", ts.gname, ts.gname));
+            sb.writeln(fmt!("    {}* value = ({}*)val;", ts.gname, ts.gname));
+            sb.writeln("    value->_typ = hash;");
+            sb.writeln("    return value;");
+            sb.writeln("}");
+            self.helpers.writeln(sb.to_str());
+
+            sb = strings::Builder::new();
+            sb.writeln(
+                fmt!("{}* _downcast_{}({}* val, i32 hash) {", ts.gname, ts.gname, ts.gname)
+            );
+            sb.writeln("    std__as_downcast_check(val->_typ, hash);");
+            sb.writeln("    return val;");
+            sb.writeln("}");
+            self.helpers.writeln(sb.to_str());
+        }
+    }
+
+    fn gen_type_name_method(mut &self) {
+        self.helpers_definitions.writeln("std__Str _glaz_type_name(i32 hash);");
+        if (self.prefs.build_mode == .Library) return;
+        let mut sb = strings::Builder::new();
+        sb.writeln("std__Str _glaz_type_name(i32 hash) {");
+        sb.writeln("    switch (hash) {");
+        for (ts in self.type_symbols) {
+            if (ts.module == "std" and ts.name == "Str") {
+                // TODO: this avoids a duplicate case; shouldn't be necessary
+                continue;
+            }
+            sb.writeln(
+                fmt!("        case {}: return _SLIT(\"{}\");", ts.gname.hash(), ts.qualname())
+            );
+        }
+        sb.writeln("    }");
+        sb.writeln("    return _SLIT(\"<unknown-type-name>\");");
+        sb.writeln("}");
+        self.helpers.writeln(sb.to_str());
+    }
+}

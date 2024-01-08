@@ -1,0 +1,72 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::tokens;
+
+pub enum AttrLevel {
+	Struct,
+	Enum,
+	Field,
+	Method,
+	Function
+}
+
+impl AttrLevel {
+	@[inline]
+	pub fn is_func(self) bool {
+		return self in vec[AttrLevel]{.Method, .Function};
+	}
+}
+
+pub struct AttrArg {
+	pub name: str,
+	pub expr: Expr
+}
+
+// A simple attribute
+pub struct Attr {
+	pub name: str,
+	pub args: vec[AttrArg],
+	pub pos: tokens::Position
+}
+
+impl Attr {
+	pub fn get(&self, name: str) ?&AttrArg {
+		for (&arg in self.args) {
+			if (arg.name == name) {
+				return arg;
+			}
+		}
+		return null;
+	}
+}
+
+pub struct Attrs {
+	pub mut attrs: map<str, Attr>
+}
+
+impl Attrs {
+	@[inline]
+	pub fn add(mut &self, attr: Attr) {
+		self.attrs[attr.name] = attr;
+	}
+
+	pub fn get(&self, name: str) ?&Attr {
+		for (k, &v in self.attrs) {
+			if (k == name) {
+				return v;
+			}
+		}
+		return null;
+	}
+
+	@[inline]
+	pub fn len(&self) i32 {
+		return self.attrs.len;
+	}
+
+	@[inline]
+	pub fn contains(&self, name: str) bool {
+		return name in self.attrs;
+	}
+}

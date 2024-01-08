@@ -1,0 +1,77 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+pub struct Scope {
+	pub mut start_pos: i32,
+	pub mut end_pos: i32,
+	pub mut parent: ?&Scope,
+	pub mut detached_from_parent: bool,
+	pub mut childrens: vec[&Scope],
+	pub mut objects: vec[Object]
+}
+
+impl Scope {
+	@[inline]
+	pub fn new(parent: ?&Scope = null, start_pos: i32 = 0) Box<Scope> {
+		return box!(Scope{
+			parent: parent,
+			start_pos: start_pos
+		});
+	}
+
+	@[inline]
+	fn dont_lookup_parent(&self) bool {
+		return self.detached_from_parent or self.parent == null;
+	}
+
+	pub fn add(mut &self, obj: Object, check_parent: bool = true) ! {
+		let name = obj.name();
+
+		if (obj is Var and name == "_") {
+			return; // ignore special var
+		}
+
+		if (check_parent) {
+			if (let eobj = self.lookup(name)) {
+				if (obj is Label and eobj is Label) {
+					raise fmt!("label `{}` is already defined", name);
+				}
+				raise fmt!("the name `{}` is defined multiple times", name);
+			}
+		}
+
+		push!(self.objects, obj);
+	}
+
+	pub fn lookup(&self, name: str) ?&Object {
+		let mut sc = self;
+		loop {
+			for (&obj in sc.objects) {
+				if (obj.name() == name) {
+					return obj;
+				}
+			}
+			if (sc.dont_lookup_parent()) {
+				break;
+			}
+			sc = sc.parent.?;
+		}
+		return null;
+	}
+
+	pub fn update_var_type(&self, name: str, typ: Type) {
+		if (let mut x = self.lookup(name)) {
+			if (x is Var) {
+				(x as &Var).typ = typ;
+			}
+		}
+	}
+
+	pub fn update_var_is_local(&self, name: str, is_local: bool) {
+		if (let mut x = self.lookup(name)) {
+			if (x is Var) {
+				(x as &Var).is_local = is_local;
+			}
+		}
+	}
+}

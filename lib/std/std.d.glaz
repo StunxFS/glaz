@@ -1,0 +1,896 @@
+#compile "@FILE_DIR/std.o"
+mod std {
+	pub mod backtrace {
+		pub fn print(skip: i32 = 0);
+	}
+	pub mod console {
+		@[inline]
+		pub fn print(s: str);
+		@[inline]
+		pub fn println(s: str = "");
+		pub fn eprint(s: str);
+		pub fn eprintln(s: str = "");
+		fn writeln_to_fd(fd: i32, s: str);
+		fn write_buf_to_fd(fd: i32, buf_: *u8, buf_len: i32);
+	}
+	pub mod console {
+		#include <sys/ioctl.h>
+		#include <termios.h>
+		extern {
+			const TIOCGWINSZ: u64;
+			struct winsize {
+				ws_row: u16,
+				ws_col: u16
+			}
+			fn ioctl(fd: i32, request: u64, arg: rawptr) i32;
+		}
+		const DEFAULT_COLUMNS_SIZE: i32 = 80;
+		const DEFAULT_ROWS_SIZE: i32 = 25;
+		pub fn get_terminal_size() (i32, i32);
+		@[inline]
+		pub fn can_show_color_on_stdout() bool;
+		@[inline]
+		pub fn can_show_color_on_stderr() bool;
+		fn supports_escape_sequences(fd: i32) bool;
+		pub fn horizontal_divider(divider: str) str;
+		pub fn header(text: str, divider: str) str;
+		@[inline]
+		fn imax(x: i32, y: i32) i32;
+	}
+	pub mod console {
+		fn get_raw_line() str;
+		pub fn readln(prompt: str = "") str;
+	}
+	pub mod console {
+		@[inline]
+		pub fn format(msg: str, open: str, close: str) str;
+		@[inline]
+		pub fn format_rgb(r: i32, g: i32, b: i32, msg: str, open: str, close: str) str;
+		@[inline]
+		pub fn rgb(r: i32, g: i32, b: i32, msg: str) str;
+		@[inline]
+		pub fn bg_rgb(r: i32, g: i32, b: i32, msg: str) str;
+		@[inline]
+		pub fn from_hex(hex: i32, msg: str) str;
+		@[inline]
+		pub fn bg_hex(hex: i32, msg: str) str;
+		@[inline]
+		pub fn bg_black(msg: str) str;
+		@[inline]
+		pub fn bright_bg_black(msg: str) str;
+		@[inline]
+		pub fn bg_blue(msg: str) str;
+		@[inline]
+		pub fn bright_bg_blue(msg: str) str;
+		@[inline]
+		pub fn bg_cyan(msg: str) str;
+		@[inline]
+		pub fn bright_bg_cyan(msg: str) str;
+		@[inline]
+		pub fn bg_green(msg: str) str;
+		@[inline]
+		pub fn bright_bg_green(msg: str) str;
+		@[inline]
+		pub fn bg_magenta(msg: str) str;
+		@[inline]
+		pub fn bright_bg_magenta(msg: str) str;
+		@[inline]
+		pub fn bg_red(msg: str) str;
+		@[inline]
+		pub fn bright_bg_red(msg: str) str;
+		@[inline]
+		pub fn bg_white(msg: str) str;
+		@[inline]
+		pub fn bright_bg_white(msg: str) str;
+		@[inline]
+		pub fn bg_yellow(msg: str) str;
+		@[inline]
+		pub fn bright_bg_yellow(msg: str) str;
+		@[inline]
+		pub fn black(msg: str) str;
+		@[inline]
+		pub fn bright_black(msg: str) str;
+		@[inline]
+		pub fn blue(msg: str) str;
+		@[inline]
+		pub fn bright_blue(msg: str) str;
+		@[inline]
+		pub fn bold(msg: str) str;
+		@[inline]
+		pub fn cyan(msg: str) str;
+		@[inline]
+		pub fn bright_cyan(msg: str) str;
+		@[inline]
+		pub fn dim(msg: str) str;
+		@[inline]
+		pub fn green(msg: str) str;
+		@[inline]
+		pub fn bright_green(msg: str) str;
+		@[inline]
+		pub fn gray(msg: str) str;
+		@[inline]
+		pub fn hidden(msg: str) str;
+		@[inline]
+		pub fn italic(msg: str) str;
+		@[inline]
+		pub fn inverse(msg: str) str;
+		@[inline]
+		pub fn magenta(msg: str) str;
+		@[inline]
+		pub fn bright_magenta(msg: str) str;
+		@[inline]
+		pub fn reset(msg: str) str;
+		@[inline]
+		pub fn red(msg: str) str;
+		@[inline]
+		pub fn bright_red(msg: str) str;
+		@[inline]
+		pub fn strikethrough(msg: str) str;
+		@[inline]
+		pub fn underline(msg: str) str;
+		@[inline]
+		pub fn white(msg: str) str;
+		@[inline]
+		pub fn bright_white(msg: str) str;
+		@[inline]
+		pub fn yellow(msg: str) str;
+		@[inline]
+		pub fn bright_yellow(msg: str) str;
+	}
+	pub mod conv {
+		@[inline]
+		pub fn bool_to_i32(b: bool) i32;
+		@[inline]
+		pub fn i32_to_bool(i: i32) bool;
+	}
+	pub mod conv {
+		fn lower(c: u8) u8;
+		const I32_SIZE: i32 = 32;
+		pub fn str_to_uint(s_: str, base__: i32, bit_size_: i32) !u64;
+		pub fn str_to_int(s: str, base_: i32, bit_size_: i32) !i64;
+		fn underscore_ok(s_: str) bool;
+	}
+	pub mod env {
+		extern {
+			const environ: *charptr;
+			fn getenv(name: charptr) charptr;
+			fn setenv(name: charptr, value: charptr, replace: bool) i32;
+			fn unsetenv(name: charptr) i32;
+		}
+		pub const HOME_DIR: str = $if (_LINUX_) get("HOME") $else get("USERPROFILE");
+		@[inline]
+		pub fn exists(name: str) bool;
+		pub fn get(name: str) str;
+		@[inline]
+		pub fn set(name: str, value: str, overwrite: bool = true) !;
+		@[inline]
+		pub fn remove(name: str) !;
+		pub fn vars() map<str, str>;
+	}
+	pub mod fs {
+		#include <dirent.h>
+		#include <sys/stat.h>
+		extern {
+			struct stat {
+				st_size: u64,
+				st_mode: u32,
+				st_mtime: i32
+			}
+			@[ccode(cname="stat")]
+			fn fn_stat(file: charptr, buf: *C::stat) i32;
+			fn lstat(file: charptr, buf: *C::stat) i32;
+			fn fopen(filename: charptr, modes: charptr) *C::FILE;
+			fn fclose(mut file: *C::FILE) i32;
+			fn fseek(file: *C::FILE, a: u64, b: i32) i32;
+			fn ftell(file: *C::FILE) i64;
+			fn rewind(file: *C::FILE);
+			fn fputs(s: charptr, mut f: *C::FILE) i32;
+			fn fread(mut x: rawptr, a: i32, c: i32, y: *C::FILE) i32;
+			fn fwrite(ptr: rawptr, item_size: usize, items: usize, mut stream: *C::FILE);
+			fn feof(f: *C::FILE) i32;
+			fn ferror(f: *C::FILE) i32;
+			fn mkdir(x: charptr, y: i32) i32;
+			fn chdir(a: charptr) i32;
+			fn rmdir(a: charptr) i32;
+			fn remove(a: charptr) i32;
+			fn access(a: charptr, o: i32) i32;
+			fn getcwd(a: charptr, o: i32) i32;
+			fn rename(a: charptr, b: charptr) i32;
+			fn realpath(a: charptr, b: charptr) charptr;
+			struct dirent {
+				d_name: *u8
+			}
+			fn opendir(d: charptr) rawptr;
+			fn readdir(d: rawptr) *C::dirent;
+			fn closedir(d: rawptr) i32;
+		}
+		fn fread(mut ptr: rawptr, item_size: i32, items: i32, stream: *C::FILE) !i32;
+	}
+	pub mod fs {
+		@[noinit]
+		pub struct Dir {
+		}
+		impl std::fs::Dir {
+			pub fn create(path: str) !;
+			pub fn remove(path: str) !;
+			@[inline]
+			pub fn set_current(path: str);
+			pub fn get_current() str;
+			pub fn walk(path: str) !vec[str];
+		}
+	}
+	pub mod fs {
+		const EOF: i32 = -1;
+		const SEEK_END: i32 = 2;
+		pub fn write_file(path: str, text: str) !;
+		pub fn read_file(path: str) !str;
+		pub struct File {
+			mut f: *C::FILE,
+			mut is_opened: bool
+		}
+		impl std::fs::File {
+			pub fn open(path: str, mode: str = "r") !std::fs::File;
+			pub fn remove(path: str) !;
+			@[inline]
+			pub fn read_into_ptr(&self, mut ptr: rawptr, max_size: i32) !i32;
+			@[inline; unsafe]
+			pub fn write_ptr(mut &self, data: rawptr, size: i32) i32;
+			@[inline]
+			pub fn write_str(mut &self, s: str);
+			pub fn writeln(mut &self, s: str = "");
+			pub fn flush(mut &self);
+			pub fn close(mut &self);
+		}
+	}
+	pub mod limits {
+		pub const MAX_F32: f32 = 3.40282346638528859811704183484516925440e+38;
+		pub const SMALLEST_NON_ZERO_F32: f32 = 1.401298464324817070923729583289916131280e-45;
+		pub const MAX_F64: f64 = 1.797693134862315708145274237317043567981e+308;
+		pub const SMALLEST_NON_ZERO_F64: f64 = 4.940656458412465441765687928682213723651e-324;
+		pub const MAX_I8: i32 = 127;
+		pub const MIN_I8: i32 = -128;
+		pub const MAX_I16: i32 = 32767;
+		pub const MIN_I16: i32 = -32768;
+		pub const MAX_I32: i32 = 2147483647;
+		pub const MIN_I32: i32 = -2147483648;
+		pub const MAX_I64: i64 = 9223372036854775807;
+		pub const MIN_I64: i64 = -9223372036854775807 - 1;
+		pub const MAX_U8: i32 = 255;
+		pub const MAX_U16: i32 = 65535;
+		pub const MAX_U32: u32 = 4294967295;
+		pub const MAX_U64: u64 = 18446744073709551615;
+	}
+	pub mod math {
+		pub const E: f64 = 2.71828182845904523536028747135266249775724709369995957496696763;
+		pub const PI: f64 = 3.14159265358979323846264338327950288419716939937510582097494459;
+		pub const PI_2: f64 = PI / 2.0;
+		pub const PI_4: f64 = PI / 4.0;
+		pub const PHI: f64 = 1.61803398874989484820458683436563811772030917980576286213544862;
+		pub const TAU: f64 = 6.28318530717958647692528676655900576839433879875021164194988918;
+		pub const SQRT2: f64 = 1.41421356237309504880168872420969807856967187537694807317667974;
+		pub const SQRT_E: f64 = 1.64872127070012814684865078781416357165377610071014801157507931;
+		pub const SQRT_PI: f64 = 1.77245385090551602729816748334114518279754945612238712821380779;
+		pub const SQRT_TAU: f64 = 2.50662827463100050241576528481104525300698674060993831662992357;
+		pub const SQRT_PHI: f64 = 1.27201964951406896425242246173749149171560804184009624861664038;
+		pub const LN2: f64 = 0.693147180559945309417232121458176568075500134360255254120680009;
+		pub const LOG2_E: f64 = 1.0 / LN2;
+		pub const LN10: f64 = 2.30258509299404568401799145468436420760110148862877297603332790;
+		pub const LOG10_E: f64 = 1.0 / LN10;
+		pub fn count_digits(number: i64) i32;
+	}
+	pub mod mem {
+		@[unsafe]
+		pub fn alloc(size: i32) rawptr;
+		@[unsafe]
+		pub fn calloc(n: i32) rawptr;
+		@[unsafe]
+		pub fn realloc(ptr: rawptr, sz: i32) rawptr;
+		@[unsafe]
+		pub fn set(mut s: rawptr, c: i32, n: i32) rawptr;
+		@[unsafe]
+		pub fn move(mut dest: rawptr, source: rawptr, sz: i32) rawptr;
+		@[unsafe]
+		pub fn copy(mut dest: rawptr, source: rawptr, sz: i32) rawptr;
+		@[unsafe]
+		pub fn duplicate(source: rawptr, sz: i32) rawptr;
+		@[unsafe]
+		pub fn swap(mut x: rawptr, mut y: rawptr);
+		@[unsafe]
+		pub fn compare(s1: rawptr, s2: rawptr, n: i32) i32;
+		@[unsafe]
+		pub fn free(mut ptr: rawptr);
+	}
+	pub mod os {
+		@[inline]
+		pub fn is_32bit() bool;
+		@[inline]
+		pub fn is_64bit() bool;
+		@[inline]
+		pub fn is_big_endian() bool;
+		@[inline]
+		pub fn is_little_endian() bool;
+	}
+	pub mod os {
+		#include <sys/utsname.h>
+		extern {
+			struct utsname {
+				sysname: charptr,
+				nodename: charptr,
+				release: charptr,
+				version: charptr,
+				machine: charptr
+			}
+			fn uname(name: *C::utsname) i32;
+			fn isatty(fd: i32) i32;
+			fn readlink(path: charptr, buf: charptr, len: i32) i32;
+			fn symlink(path1: charptr, path2: charptr) i32;
+		}
+		@[inline]
+		pub fn symlink(orig: str, dest: str) !;
+		@[inline]
+		pub fn system(cmd: str) i32;
+		@[inline]
+		pub fn is_atty(fd: i32) i32;
+		struct Uname {
+			pub sysname: str,
+			pub nodename: str,
+			pub release: str,
+			pub version: str,
+			pub machine: str
+		}
+		pub fn uname() std::os::Uname;
+		@[inline]
+		fn popen(path: str) *C::FILE;
+		struct Result {
+			pub exit_code: i32,
+			pub output: str
+		}
+		pub fn execute(cmd: str) std::os::Result;
+		pub fn executable() str;
+		@[inline]
+		pub fn user_os() str;
+	}
+	pub mod path {
+		const F_OK: i32 = 0;
+		const X_OK: i32 = 1;
+		const W_OK: i32 = 2;
+		const R_OK: i32 = 4;
+		const S_IFMT: i32 = 0xF000;
+		const S_IFDIR: i32 = 0x4000;
+		const S_IFLNK: i32 = 0xA000;
+		pub const PATH_SEPARATOR: str = "/";
+		pub const PATH_SEPARATOR_B: u8 = b'/';
+		pub const PATH_DELIMITER: str = ":";
+		pub const MAX_PATH_LEN: i32 = 4096;
+		@[inline]
+		pub fn exists(path: str) bool;
+		@[inline]
+		pub fn is_executable(path: str) bool;
+		@[inline]
+		pub fn is_writable(path: str) bool;
+		@[inline]
+		pub fn is_readable(path: str) bool;
+		pub fn is_dir(path: str) bool;
+		@[inline]
+		pub fn is_file(path: str) bool;
+		@[inline]
+		pub fn is_absolute(path: str) bool;
+		pub fn is_link(path: str) bool;
+		pub fn realpath(fpath: str) str;
+		pub fn dirname(path: str) str;
+		pub fn basename(path: str) str;
+		@[inline]
+		pub fn filename(path: str) str;
+		pub fn extension(path: str) str;
+		@[inline]
+		pub fn split(path: str) vec[str];
+		@[inline]
+		pub fn join(base_: str, dirs: ...str) str;
+	}
+	pub mod process {
+		@[noreturn]
+		pub fn abort();
+		@[noreturn]
+		pub fn exit(code: i32 = 0);
+	}
+	pub mod strings {
+		extern {
+			fn qsort(mut base_: rawptr, items: usize, item_size: usize, cb: rawptr);
+			const std__strings__sorter: rawptr;
+		}
+		fn sorter(a: std::strings::Possibility, b: std::strings::Possibility) bool;
+		struct Possibility {
+			value: str,
+			similarity: f32
+		}
+		pub struct Suggestion {
+			mut known: vec[std::strings::Possibility],
+			wanted: str,
+			limit: i32
+		}
+		impl std::strings::Suggestion {
+			pub fn new(wanted: str, possibilities: vec[str], limit: i32 = 25) std::strings::Suggestion;
+			pub fn add(mut &self, val: str);
+			pub fn add_many(mut &self, many: vec[str]);
+			@[inline]
+			pub fn sort(mut &self);
+			pub fn suggest(&self) str;
+		}
+		fn collect_possibilities(possibilities: vec[std::strings::Possibility]) vec[str];
+	}
+	pub mod strings {
+		pub struct Builder {
+			mut data: vec[u8]
+		}
+		impl std::strings::Builder {
+			@[inline]
+			pub fn new(cap: i32 = 50) std::strings::Builder;
+			@[inline]
+			pub fn write_byte(mut &self, b: u8);
+			pub fn write_rune(mut &self, c: rune);
+			pub fn write_str(mut &self, s: str);
+			pub fn writeln(mut &self, s: str = "");
+			@[inline]
+			pub fn go_back(mut &self, n: i32);
+			@[inline]
+			pub fn go_back_to(mut &self, pos: i32);
+			pub fn cut_last(mut &self, pos: i32) str;
+			pub fn cut_to(mut &self, pos: i32) str;
+			@[inline]
+			pub fn len(&self) i32;
+			pub fn to_str(mut &self) str;
+			@[unsafe]
+			pub fn drop(mut &self);
+		}
+	}
+	pub mod strings {
+		pub fn levenshtein_distance(a: str, b: str) i32;
+		pub fn levenshtein_distance_percentage(a: str, b: str) f32;
+		pub fn dice_coefficient(s1: str, s2: str) f32;
+	}
+	pub mod testing {
+		const SUPPORT_COLOR: bool = std::console::can_show_color_on_stdout();
+		fn header(txt: str, sep: str) str;
+		fn bold(txt: str) str;
+		fn green(txt: str) str;
+		fn red(txt: str) str;
+		fn yellow(txt: str) str;
+		const OK_STATUS: str = bold(green(" [  OK  ] "));
+		const FAIL_STATUS: str = bold(red(" [ FAIL ] "));
+		const SKIP_STATUS: str = bold(yellow(" [ SKIP ] "));
+		const DIVIDER: str = bold(header("", "-"));
+		@[inline]
+		fn print_header();
+		@[inline]
+		fn print_test_ok(name: str);
+		@[inline]
+		fn print_test_fail(name: str, pos: str);
+		@[inline]
+		fn print_test_skip(name: str);
+		fn print_summary_tests(fail_tests: i32, ok_tests: i32, skip_tests: i32, total_tests: i32);
+	}
+	impl u8 {
+		@[inline]
+		pub fn is_space(self) bool;
+		@[inline]
+		pub fn is_digit(self) bool;
+		@[inline]
+		pub fn is_hex_digit(self) bool;
+		@[inline]
+		pub fn is_oct_digit(self) bool;
+		@[inline]
+		pub fn is_bin_digit(self) bool;
+		@[inline]
+		pub fn is_letter(self) bool;
+		@[inline]
+		pub fn is_alphanum(self) bool;
+		@[inline]
+		pub fn is_upper(self) bool;
+		@[inline]
+		pub fn is_lower(self) bool;
+		pub fn hex(self) str;
+		@[inline]
+		pub fn hex2(self) str;
+		@[inline]
+		pub fn len_utf8(self) i32;
+		pub fn to_ascii_str(self) str;
+		pub fn to_escaped_str(self) str;
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl rune {
+		@[inline]
+		pub fn is_space(self) bool;
+		@[inline]
+		pub fn is_digit(self) bool;
+		@[inline]
+		pub fn is_hex_digit(self) bool;
+		@[inline]
+		pub fn is_oct_digit(self) bool;
+		@[inline]
+		pub fn is_bin_digit(self) bool;
+		@[inline]
+		pub fn is_letter(self) bool;
+		@[inline]
+		pub fn is_ascii(self) bool;
+		@[inline]
+		pub fn is_alphanum(self) bool;
+		@[inline]
+		pub fn is_upper(self) bool;
+		@[inline]
+		pub fn is_lower(self) bool;
+		@[inline]
+		pub fn len_utf8(self) i32;
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	#define OK_RES_VOID (Result__void){.ok=true}
+	#define OK_RES(TName, val) (TName){.value=(val), .ok=true}
+	#define ERR_RES(TName, _msg, _code) (TName){.err=(std__Error){.msg=(_msg), .code=(_code)}, .ok=false}
+	@[special_type(name="error")]
+	struct Error {
+		pub msg: str,
+		pub code: i32
+	}
+	impl std::Error {
+		fn panic(&self);
+		fn to_str(&self) str;
+	}
+	impl untyped_float {
+		pub fn bits(self) u64;
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl f32 {
+		pub fn from_bits(b: u32) f32;
+		pub fn bits(self) u32;
+		pub fn to_str(self) str;
+	}
+	impl f64 {
+		pub fn from_bits(b: u64) f64;
+		pub fn bits(self) u64;
+		pub fn to_str(self) str;
+	}
+	const DIGIT_PAIRS: str = "00102030405060708090011121314151617181910212223242526272829203132333435363738393041424344454647484940515253545556575859506162636465666768696071727374757677787970818283848586878889809192939495969798999";
+	fn u64_to_hex(n_: u64, len: i32) str;
+	fn u64_to_hex_no_leading_zeros(n_: u64, len: i32) str;
+	impl untyped_int {
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl bool {
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl i32 {
+		pub fn str_l(self, max: i32) str;
+		@[inline]
+		pub fn hex(self) str;
+		@[inline]
+		pub fn hex2(self) str;
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl i8 {
+		@[inline]
+		pub fn hex(self) str;
+		@[inline]
+		pub fn hex2(self) str;
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl i16 {
+		@[inline]
+		pub fn hex(self) str;
+		@[inline]
+		pub fn hex2(self) str;
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl u16 {
+		@[inline]
+		pub fn hex(self) str;
+		@[inline]
+		pub fn hex2(self) str;
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl u32 {
+		pub fn hex(self) str;
+		@[inline]
+		pub fn hex2(self) str;
+		pub fn to_str(self) str;
+	}
+	impl i64 {
+		@[inline]
+		pub fn hex(self) str;
+		@[inline]
+		pub fn hex2(self) str;
+		pub fn to_str(self) str;
+	}
+	impl u64 {
+		pub fn hex(self) str;
+		@[inline]
+		pub fn hex2(self) str;
+		pub fn to_str(self) str;
+	}
+	impl charptr {
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl rawptr {
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl isize {
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	impl usize {
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	@[inline]
+	pub fn pointer_to_str(ptr: rawptr) str;
+	#include <stdio.h>
+	#include <errno.h>
+	#include <stdlib.h>
+	#include <string.h>
+	#include <unistd.h>
+	#include <signal.h>
+	#include <execinfo.h>
+	extern {
+		const _GLAZ__TARGET_IS_XBIT: i32;
+		const _GLAZ__TARGET_ORDER_IS: i32;
+		fn _glaz_type_name(hash: i32) str;
+		fn backtrace(__array: *rawptr, __size: i32) i32;
+		fn backtrace_symbols(__array: *rawptr, __size: i32) *charptr;
+		fn popen(cmd: charptr, modes: charptr) *C::FILE;
+		fn pclose(stream: *C::FILE) i32;
+		@[typedef]
+		struct FILE {
+		}
+		const stdin: *C::FILE;
+		const stdout: *C::FILE;
+		const stderr: *C::FILE;
+		const errno: i32;
+		fn malloc(size: i32) rawptr;
+		fn calloc(nmemb: i32, size: i32) rawptr;
+		fn realloc(ptr: rawptr, size: i32) rawptr;
+		fn free(mut ptr: rawptr);
+		fn memcpy(mut dest: rawptr, __src: rawptr, n: i32) rawptr;
+		fn memmove(mut dest: rawptr, __src: rawptr, n: i32) rawptr;
+		fn memset(mut s: rawptr, c: i32, n: i32) rawptr;
+		fn memcmp(s1: rawptr, s2: rawptr, n: i32) i32;
+		fn printf(fmt: charptr, ...) i32;
+		fn asprintf(mut s: *charptr, fmt: charptr, ...) i32;
+		fn getchar() i32;
+		fn putchar(c: i32) i32;
+		fn gets(s: charptr) charptr;
+		fn puts(s: charptr) i32;
+		fn abort();
+		fn exit(code: i32);
+		fn system(cmd: charptr) i32;
+		fn strerror(c: i32) charptr;
+		fn strlen(s: charptr) i32;
+		fn write(fd: i32, buf: rawptr, size: i32) i32;
+		fn fflush(mut stream: *C::FILE) i32;
+		fn fgets(mut s: charptr, n: i32, stream: *C::FILE) i32;
+		fn getline(buf: *charptr, size: *usize, stream: *C::FILE) i32;
+	}
+	pub mod backtrace {
+	}
+	pub mod console {
+	}
+	pub mod conv {
+	}
+	pub mod env {
+	}
+	pub mod fs {
+	}
+	pub mod limits {
+	}
+	pub mod math {
+	}
+	pub mod mem {
+	}
+	pub mod os {
+	}
+	pub mod path {
+	}
+	pub mod process {
+	}
+	pub mod strings {
+	}
+	pub mod testing {
+	}
+	@[noreturn]
+	pub fn panic(msg: str);
+	fn init_args(argc: i32, argv: *charptr) vec[str];
+	fn null_check(ptr: rawptr, msg: str) rawptr;
+	fn as_cast(val: rawptr, got: i32, expected: i32) rawptr;
+	fn as_downcast_check(got: i32, expected: i32);
+	fn fmt(lit: str, args: *str) str;
+	fn segmentation_fault_handler(_: i32);
+	fn check_fixed_index(i: i32, len: i32) i32;
+	pub fn strerr_from_errno(code: i32 = C::errno) str;
+	fn map_hash_from_str(s: str) u32;
+	struct MapIter {
+		mut bucketidx: u32,
+		mut node: *std::MapNode
+	}
+	impl std::MapIter {
+		@[inline]
+		fn new() std::MapIter;
+	}
+	struct MapNode {
+		mut hash: u32,
+		mut key: str,
+		mut value: rawptr,
+		mut next: *std::MapNode
+	}
+	impl std::MapNode {
+		fn new(key: str, value: rawptr, vsize: i32) *std::MapNode;
+	}
+	@[special_type(name="map")]
+	struct Map {
+		mut buckets: **std::MapNode,
+		mut nbuckets: u32,
+		pub mut len: u32,
+		vsize: i32
+	}
+	impl std::Map {
+		@[inline]
+		fn new(vsize: i32) std::Map;
+		fn from_literal(keys: *str, values: rawptr, vsize: i32, buckets: i32) std::Map;
+		fn add_node(mut &self, mut node: *std::MapNode);
+		fn get_or(&self, key: str, or_value: rawptr) rawptr;
+		fn get(&self, key: str) rawptr;
+		fn get_ref(&self, key: str) **std::MapNode;
+		fn set(mut &self, key: str, value: rawptr);
+		@[inline]
+		fn exists(&self, key: str) bool;
+		pub fn remove(mut &self, key: str);
+		@[inline]
+		fn bucket_index(&self, hash: u32) i32;
+		fn resize(mut &self, nbuckets: u32);
+		fn next(&self, mut iter: *std::MapIter) str;
+		fn drop(mut &self);
+	}
+	struct Slice {
+		data: rawptr,
+		elem_size: i32,
+		len: i32
+	}
+	impl std::Slice {
+		fn get(self, idx: i32) rawptr;
+	}
+	#define _SLIT0 ((std__Str){.cstr=(u8*)"", .len=0})
+	#define _SLIT(s) ((std__Str){.cstr=(u8*)("" s), .len=(sizeof(s)-1)})
+	#define _SLEN(s, n) ((std__Str){.cstr=(u8*)("" s), .len=n})
+	@[special_type(name="string")]
+	pub struct Str {
+		pub mut cstr: *u8 = null,
+		pub len: i32
+	}
+	impl str {
+		@[inline]
+		pub fn new(cstr: charptr) str;
+		@[inline]
+		pub fn new_clone(cstr: charptr) str;
+		@[inline]
+		pub fn new2(cstr: *u8) str;
+		@[inline]
+		pub fn new_clone2(cstr: *u8) str;
+		@[inline]
+		pub fn with_len(cstr: charptr, len: i32) str;
+		@[inline]
+		pub fn with_len2(cstr: *u8, len: i32) str;
+		pub fn from_size(sz: i32) str;
+		pub fn from_bytes(bytes: vec[u8]) str;
+		fn add(self, other: str) str;
+		fn eq(self, other: str) bool;
+		@[inline]
+		fn neq(self, other: str) bool;
+		fn at(self, idx: i32) u8;
+		pub fn rune_at(self, idx: i32) rune;
+		pub fn bytes(self) vec[u8];
+		pub fn runes(self) vec[rune];
+		fn substr(self, start: i32, end: i32) str;
+		@[inline]
+		fn left(self, start: i32) str;
+		@[inline]
+		fn right(self, end: i32) str;
+		pub fn replace(self, rep: str, with_: str) str;
+		pub fn replace_each(self, pairs: vec[(str, str)]) str;
+		pub fn starts_with(self, p: str) bool;
+		pub fn ends_with(self, p: str) bool;
+		pub fn index_byte(self, b: u8) i32;
+		pub fn index(self, p: str) i32;
+		pub fn index_any(self, chars: str) i32;
+		pub fn last_index(self, p: str) i32;
+		pub fn index_after(self, p: str, start_: i32) i32;
+		pub fn contains(self, substr: str) bool;
+		pub fn contains_any(self, chars: str) bool;
+		pub fn find_between(self, start: str, end: str) str;
+		pub fn count(self, substr: str) i32;
+		pub fn all_before(self, sub: str) str;
+		pub fn all_before_last(self, sub: str) str;
+		pub fn all_after(self, sub: str) str;
+		pub fn all_after_last(self, sub: str) str;
+		pub fn split(self, delim: str, nth: i32 = 0) vec[str];
+		pub fn split_into_lines(self) vec[str];
+		@[inline]
+		pub fn trim_space(self) str;
+		pub fn trim(self, cutset: str) str;
+		pub fn trim_left(self, cutset: str) str;
+		pub fn trim_right(self, cutset: str) str;
+		pub fn repeat(self, count: i32) str;
+		pub fn fields(self) vec[str];
+		pub fn wrap(self, limite_width: i32 = 60, end: str = "\n") str;
+		pub fn is_capital(self) bool;
+		pub fn is_upper(self) bool;
+		pub fn is_lower(self) bool;
+		pub fn match_glob(self, pattern: str) bool;
+		pub fn hash(self) i32;
+		pub fn utf32_code(self) i32;
+		pub fn len_utf8(self) i32;
+		pub fn clone(&self) str;
+		@[inline]
+		pub fn to_str(self) str;
+	}
+	fn utf32_to_str(code: u32) str;
+	@[unsafe]
+	pub fn utf32_to_str_no_malloc(code: u32, mut buffer: *u8) str;
+	fn get_uchar(s: str, index: i32) i32;
+	@[special_type(name="vec")]
+	struct Vec {
+		mut data: rawptr,
+		mut elem_size: i32,
+		mut offset: usize,
+		pub mut len: i32,
+		pub mut cap: i32
+	}
+	impl std::Vec {
+		fn new(len: i32, cap_: i32, elem_size: i32) std::Vec;
+		fn from_c_array(carray: rawptr, len: i32, cap_: i32, elem_size: i32) std::Vec;
+		@[inline]
+		fn from_c_fixed_array(carray: rawptr, len: i32, elem_size: i32) std::Vec;
+		fn new_with_init(len: i32, cap_: i32, init: rawptr, elem_size: i32) std::Vec;
+		fn ensure_cap(mut &self, required: i32);
+		fn push(mut &self, val: rawptr);
+		fn pop(mut &self) rawptr;
+		fn extend(mut &self, other: std::Vec);
+		@[inline]
+		fn get_unsafe(&self, i: i32) rawptr;
+		fn get(self, idx: i32) rawptr;
+		@[inline]
+		fn index_msg(self, idx: i32) str;
+		@[inline]
+		fn set_unsafe(&self, idx: i32, val: rawptr);
+		fn set(&self, idx: i32, val: rawptr);
+		@[inline]
+		pub fn clear(mut &self);
+		@[inline]
+		pub fn trim(mut &self, index: i32);
+		pub fn delete(mut &self, i: i32, size: i32 = 1);
+		fn slice(self, start: i32, end: i32) std::Vec;
+		@[inline]
+		fn left(self, start: i32) std::Vec;
+		@[inline]
+		fn right(self, end: i32) std::Vec;
+		@[unsafe]
+		pub fn pointers(&self) vec[rawptr];
+		pub fn clone(&self) std::Vec;
+		@[inline; unsafe]
+		pub fn drop(mut &self);
+	}
+	impl rawptr {
+		@[inline; unsafe]
+		fn bytes(self, len: i32) vec[u8];
+	}
+	impl vec[str] {
+		pub fn join(&self, sep: str = ", ") str;
+		pub fn to_str(&self) str;
+	}
+}

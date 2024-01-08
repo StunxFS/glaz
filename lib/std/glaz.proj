@@ -1,0 +1,8 @@
+name: "std"
+description: "The Glaz's standard library"
+version: "0.1.0"
+type: "lib"
+homepage: ""
+authors: ["The Glaz Developers"]
+compiler_flags: ["--no-std"]
+dependencies: []

@@ -1,0 +1,28 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+pub mod ast;
+pub mod checker;
+pub mod cli;
+pub mod codegen;
+pub mod dgen;
+pub mod parser;
+pub mod pref;
+pub mod resolver;
+pub mod tokenizer;
+pub mod tokens;
+pub mod utils;
+
+use cli::CLI;
+
+fn slice_to_vec(args: &[str]) vec[str] {
+    let mut v = vec[str]::new();
+    for (i in 1..args.len) {
+        push!(v, args[i]);
+    }
+    return v;
+}
+
+fn main(args: vec[str]) {
+	CLI::new(slice_to_vec(&args[1:])).start();
+}

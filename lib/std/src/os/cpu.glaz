@@ -1,0 +1,22 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+@[inline]
+pub fn is_32bit() bool {
+	return C::_GLAZ__TARGET_IS_XBIT == 32;
+}
+
+@[inline]
+pub fn is_64bit() bool {
+	return C::_GLAZ__TARGET_IS_XBIT == 64;
+}
+
+@[inline]
+pub fn is_big_endian() bool {
+	return C::_GLAZ__TARGET_ORDER_IS == 1;
+}
+
+@[inline]
+pub fn is_little_endian() bool {
+	return C::_GLAZ__TARGET_ORDER_IS == 2;
+}

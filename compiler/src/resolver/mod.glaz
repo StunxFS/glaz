@@ -1,0 +1,359 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::console::eprintln;
+
+use src::ast;
+use src::pref;
+use src::utils;
+use src::tokens;
+
+pub struct Resolver {
+	prefs: &pref::Preferences,
+	mut table: &ast::Table,
+	mut sf: &ast::SourceFile = &ast::SourceFile{},
+	mut sym: ast::Symbol,
+	mut func: &ast::FnDecl = &ast::FnDecl{},
+	mut expecting_type: bool,
+	mut expecting_fn: bool,
+	mut mods: str,
+	mut use_pos: map<str, &tokens::Position>,
+	mut used_syms: map<str, bool>
+}
+
+impl Resolver {
+	@[inline]
+	pub fn new(table: &ast::Table, prefs: &pref::Preferences) Box<Resolver> {
+		return box!(Resolver{
+			table: table,
+			prefs: prefs
+		});
+	}
+
+	pub fn resolve_files(mut &self, source_files: vec[Box<ast::SourceFile>]) {
+		for (&sf in source_files) {
+			self.resolve(sf);
+		}
+	}
+
+	pub fn resolve(mut &self, sf: &ast::SourceFile) {
+		self.sf = sf;
+		self.sym = sf.sym;
+		self.mods = sf.module;
+		self.use_pos = map<str, &tokens::Position>::new();
+		self.used_syms = map<str, bool>::new();
+		self.resolve_decls(sf.decls);
+		// check unused imports
+		for (name, is_used in self.used_syms) {
+			if (!is_used and name in self.use_pos) {
+				let sym = self.sf.imported_syms[name];
+				if (sym !is ast::UnknownSymbol) {
+					self.warn(
+						fmt!("{} `{}` is imported but never used", sym.kind(), name),
+						self.use_pos[name]
+					);
+				}
+			}
+		}
+	}
+
+	fn check_access(
+		mut &self, name: str, module: str, kind: str, is_pub: bool, pos: &tokens::Position
+	) {
+		if (!is_pub and self.mods != module and self.sf.kind == .Default) {
+			if (kind != "<unknown-symbol>") {
+				self.error(fmt!("{} `{}` is private", kind, name), pos);
+			}
+		}
+	}
+
+	fn resolve_symbol(
+		mut &self, sym: ast::Symbol, is_last: bool, name: str, pos: &tokens::Position
+	) ast::Symbol {
+		switch (sym) is {
+			ast::Module => {
+				if (let r = sym.find(name)) {
+					return r.*;
+				}
+				self.error(fmt!("could not find `{}` in `{}`", name, sym.name()), pos);
+			}
+			ast::TypeSymbol => {
+				let ts = sym as &ast::TypeSymbol;
+				if (ts.kind == .Enum) {
+					if (self.expecting_type and is_last) {
+						self.error("expected type, found an enum field", pos);
+					}
+					if ((ts.info as &ast::EnumInfo).contains(name)) {
+						return sym;
+					}
+					self.error(fmt!("enum `{}` has no field `{}`", ts.name, name), pos);
+				} elif (let r = ts.find(name)) {
+					return r.*;
+				} else { /* checker handle this :) */ }
+			}
+			else => self.error("expected module or type, found " + sym.kind(), pos);
+		}
+		return ast::UnknownSymbol{};
+	}
+
+	fn resolve_ident(mut &self, mut expr: &ast::Ident) {
+		if (expr.name == "_") {
+			return;
+		} elif (let obj = expr.scope.?.lookup(expr.name)) {
+			expr.obj = obj;
+			expr.is_obj = obj is ast::Var;
+			expr.resolved = true;
+		} elif (let im = self.sf.find(expr.name)) { // imported symbol
+			expr.sym = im;
+			expr.typ = self.check_symbol(im, &expr.pos);
+			expr.resolved = true;
+			self.used_syms[expr.name] = true;
+			return;
+		} elif (let i = self.sym.find(expr.name)) {
+			expr.sym = i;
+			expr.typ = self.check_symbol(i, &expr.pos);
+			expr.resolved = true;
+		} elif (let ig = self.table.gmod.find(expr.name)) {
+			expr.sym = ig;
+			expr.typ = self.check_symbol(ig, &expr.pos);
+			expr.resolved = true;
+		} else {
+			self.error(fmt!("cannot find `{}` in this scope", expr.name), &expr.pos);
+		}
+	}
+
+	fn check_symbol(mut &self, sym: &ast::Symbol, pos: &tokens::Position) ast::Type {
+		switch (sym.*) is {
+			ast::Module => {
+				if (self.expecting_type) {
+					self.error("expected type, found module", pos);
+				} elif (self.expecting_fn) {
+					self.error("expected function, found module", pos);
+				} else {
+					self.error("expected variable or constant, found module", pos);
+				}
+			}
+			ast::Const => {
+				if (self.expecting_type) {
+					self.error("expected type, found constant", pos);
+					return ast::VOID_T;
+				} elif (self.expecting_fn) {
+					self.error("expected function, found constant", pos);
+					return ast::VOID_T;
+				}
+				return sym.typ();
+			}
+			ast::TypeSymbol => {
+				if (self.expecting_type) {
+					return ast::Type::new(sym as &ast::TypeSymbol);
+				} elif (self.expecting_fn) {
+					self.error("expected function, found type", pos);
+				} else {
+					self.error("expected variable or constant, found type", pos);
+				}
+			}
+			ast::Function => {
+				if (self.expecting_type) {
+					self.error("expected type, found function", pos);
+				} elif (!self.expecting_fn){
+					self.error("expected variable or constant, found function", pos);
+				}
+			}
+			else => {
+				self.error("unexpected symbol here (bug)", pos);
+			}
+		}
+		return ast::VOID_T;
+	}
+
+	fn resolve_path(mut &self, mut expr: &ast::PathExpr) {
+		expr.typ = ast::VOID_T;
+		switch (expr.left) is {
+			ast::Ident => {
+				let ident = expr.left as &ast::Ident;
+				if (ident.name == "C") { // special C module
+					expr.left_info = &self.table.cmod;
+				} elif (let im = self.sf.find(ident.name)) {
+					expr.left_info = im.*;
+					self.used_syms[ident.name] = true;
+				} elif (let l = self.sym.find(ident.name)) {
+					expr.left_info = l.*;
+				} elif (let g = self.table.gmod.find(ident.name)) {
+					expr.left_info = g.*; // global symbol
+				} else {
+					self.error(fmt!("use of undeclared module `{}`", ident.name), &ident.pos);
+					expr.has_err = true;
+				}
+				if (!expr.has_err) {
+					expr.field_info = self.resolve_symbol(
+						expr.left_info,
+						expr.is_last,
+						expr.field_name,
+						&expr.field_pos
+					);
+					if (expr.field_info !is ast::UnknownSymbol) {
+						self.check_access(
+							expr.field_name,
+							expr.field_info.module(),
+							expr.field_info.kind(),
+							expr.field_info.is_pub(),
+							&expr.field_pos
+						);
+						expr.is_associated = expr.left_info is ast::TypeSymbol;
+					} else {
+						expr.is_unknown = true;
+					}
+				}
+			}
+			ast::PathExpr => {
+				let mut p = expr.left as &ast::PathExpr;
+				self.resolve_path(p);
+				if (!p.has_err) {
+					expr.left_info = p.field_info;
+					expr.field_info = self.resolve_symbol(
+						p.field_info,
+						p.is_last,
+						expr.field_name,
+						&expr.field_pos
+					);
+					if (expr.field_info !is ast::UnknownSymbol) {
+						self.check_access(
+							expr.field_name,
+							expr.field_info.module(),
+							expr.field_info.kind(),
+							expr.field_info.is_pub(),
+							&expr.field_pos
+						);
+						expr.is_associated = expr.left_info is ast::TypeSymbol;
+					} else {
+						expr.is_unknown = true;
+					}
+				}
+			}
+			else => {
+				self.error("bad use of path expression", &expr.pos);
+				expr.has_err = true;
+			}
+		}
+	}
+
+	fn find_sym_in_gmod_or_proj(&self, name: str) ?&ast::Symbol {
+		if (let sym = self.table.gmod.find(name)) {
+			return sym;
+		}
+		if (self.mods == self.prefs.src_name) {
+			if (let src_proj = self.table.gmod.find(self.prefs.src_name)) {
+				if (let sym = src_proj.find(name)) {
+					return sym;
+				}
+			}
+		}
+		return null;
+	}
+
+	fn check_imported_ident(mut &self, name: str, module: str, pos: &tokens::Position) {
+		if (let im = self.sf.find(name)) { // imported symbol
+			self.error(fmt!("the name `{}` is defined multiple times", name), pos);
+			let im_module = im.module();
+			if (im_module == "rt") {
+				self.note(fmt!("`{}` is a runtime symbol", name));
+			} else {
+				self.note_with_pos(
+					fmt!("previous import of the {} `{}` was here", im.kind(), name),
+					self.use_pos[name]
+				);
+				if (im_module != module) {
+					let as_name = if (im is ast::Module or im is ast::Function) "other_" + name
+						else if (im is ast::Const) "OTHER_" + name else "Other" + name;
+					self.help(
+						fmt!(
+							"you can use `as` to change the binding name of the import: {} as {}",
+							name, as_name
+						)
+					);
+				}
+			}
+		}
+	}
+
+	fn resolve_comptime_flag(mut &self, expr: &ast::Expr) bool {
+		switch (expr) is {
+			ast::BoolLiteral => return (expr as &ast::BoolLiteral).lit;
+			ast::Ident => {
+				let i = expr as &ast::Ident;
+				switch (i.name) {
+					"_LINUX_" => return self.prefs.os.equals_to_glaz_flag(i.name);
+					// bitness:
+					"_x64_" => return self.prefs.cpu_info.is_64bit;
+					"_x32_" => return self.prefs.cpu_info.is_32bit;
+					// endianness:
+					"_BIG_ENDIAN_" => return self.prefs.cpu_info.is_big_endian;
+					"_LITTLE_ENDIAN_" => return self.prefs.cpu_info.is_little_endian;
+					// other:
+					"_RELEASE_" => return self.prefs.is_release;
+					"_DEBUG_" => return !self.prefs.is_release;
+					"_NO_STD_" => return self.prefs.no_std;
+					else => {
+						if (i.name.match_glob("_*_")) {
+							self.error(fmt!("unknown compiler flag `{}`", i.name), expr.pos());
+							return false;
+						}
+						return i.name in self.prefs.flags;
+					}
+				}
+			}
+			ast::UnaryExpr => {
+				let u = expr as &ast::UnaryExpr;
+				if (u.op == .Bang) {
+					return !self.resolve_comptime_flag(&u.right);
+				} else {
+					self.error(fmt!("expected `!`, found token `{}`", u.op), &u.pos);
+				}
+			}
+			ast::BinaryExpr => {
+				let b = expr as &ast::BinaryExpr;
+				switch (b.op) {
+					.KeyAnd, .KeyOr => {
+						let l = self.resolve_comptime_flag(&b.left);
+						let r = self.resolve_comptime_flag(&b.right);
+						return if (b.op == .KeyAnd) l and r else l or r;
+					}
+					else => self.error(
+						"non-boolean expression used as comptime `if` condition", expr.pos()
+					);
+				}
+			}
+			ast::ParExpr => return self.resolve_comptime_flag(&(expr as &ast::ParExpr).expr);
+			else => self.error("unexpected expression for comptime `if` condition", expr.pos());
+		}
+		return false;
+	}
+
+	fn error(mut &self, msg: str, pos: &tokens::Position) {
+		eprintln(utils::formatted_report("error", msg, pos));
+		self.table.err_c++;
+	}
+
+	fn warn(mut &self, msg: str, pos: &tokens::Position) {
+		if (self.prefs.is_release) {
+			self.error(msg, pos);
+		} else {
+			eprintln(utils::formatted_report("warning", msg, pos));
+		}
+	}
+
+	@[inline]
+	fn note(&self, msg: str) {
+		eprintln(utils::small_report("note", msg));
+	}
+
+	@[inline]
+	fn note_with_pos(&self, msg: str, pos: &tokens::Position) {
+		eprintln(utils::small_report_with_pos("note", msg, pos));
+	}
+
+	@[inline]
+	fn help(&self, msg: str) {
+		eprintln(utils::small_report("help", msg));
+	}
+}

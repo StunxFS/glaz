@@ -1,0 +1,164 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::tokens;
+
+pub type Stmt = EmptyStmt | AssignStmt | Block | DeferStmt | IfStmt | ExprStmt
+	| LoopStmt | WhileStmt | DoWhileStmt | ForInStmt | SwitchStmt | ReturnStmt
+	| RaiseStmt | BranchStmt | LabelStmt | GotoStmt = EmptyStmt{};
+
+pub struct EmptyStmt {
+	pub pos: tokens::Position
+}
+
+pub struct LabelStmt {
+	pub label: str,
+	pub pos: tokens::Position
+}
+
+pub struct GotoStmt {
+	pub label: str,
+	pub label_pos: tokens::Position,
+	pub pos: tokens::Position
+}
+
+pub struct AssignStmt {
+	pub mut left: vec[Expr],
+	pub op: tokens::Kind,
+	pub mut right: vec[Expr],
+	pub pos: tokens::Position,
+	pub is_decl: bool // using `let`
+}
+
+pub struct Block {
+	pub is_unsafe: bool,
+	pub stmts: vec[Stmt],
+	pub scope: &Scope,
+	pub pos: tokens::Position
+}
+
+pub struct DeferStmt {
+	pub mut stmt: Stmt,
+	pub mut defer_var: str,
+	pub pos: tokens::Position
+}
+
+pub struct IfStmt {
+	pub mut branches: vec[IfBranch],
+	pub mut is_comptime: bool,
+	pub mut branch_idx: i32 = -1, // used with comptime if
+	pub has_else: bool,
+	pub pos: tokens::Position
+}
+
+pub struct IfBranch {
+	pub mut skip: bool,
+	pub kind: tokens::Kind, // 'if', 'elif', or 'else'
+	pub mut cond: Expr,
+	pub mut stmt: Stmt,
+	pub is_else: bool
+}
+
+pub struct ExprStmt {
+	pub mut expr: Expr,
+	pub pos: tokens::Position
+}
+
+pub struct LoopStmt {
+	pub mut stmt: Stmt,
+	pub pos: tokens::Position
+}
+
+pub struct WhileStmt {
+	pub mut cond: Expr,
+	pub mut stmt: Stmt,
+	pub pos: tokens::Position
+}
+
+pub struct DoWhileStmt {
+	pub mut cond: Expr,
+	pub mut stmt: Stmt,
+	pub pos: tokens::Position
+}
+
+pub struct ForInStmt {
+	pub key: str,
+	pub mut key_typ: Type,
+	pub key_pos: tokens::Position,
+	pub key_is_mut: bool,
+	pub key_is_ref: bool,
+	pub value: str,
+	pub mut value_typ: Type,
+	pub value_is_mut: bool,
+	pub value_is_ref: bool,
+	pub value_pos: tokens::Position,
+	pub has_value: bool,
+	pub mut boxed_value: bool,
+	pub mut scope: &Scope,
+	pub mut expr: Expr,
+	pub mut stmt: Stmt,
+	pub pos: tokens::Position
+}
+
+pub struct SwitchStmt {
+	pub mut cond: Expr,
+	pub is_typeswitch: bool,
+	pub mut branches: vec[SwitchBranch],
+	pub pos: tokens::Position
+}
+
+pub struct SwitchBranch {
+	pub mut exprs: vec[Expr],
+	pub mut stmt: Stmt,
+	pub is_else: bool,
+	pub mut cond: Expr,
+	pub has_cond: bool,
+	pub pos: tokens::Position
+}
+
+pub struct ReturnStmt {
+	pub mut expr: Expr,
+	pub has_expr: bool,
+	pub scope: &Scope,
+	pub pos: tokens::Position
+}
+
+pub struct RaiseStmt {
+	pub mut msg: Expr,
+	pub mut code: Expr,
+	pub scope: &Scope,
+	pub pos: tokens::Position
+}
+
+pub struct BranchStmt {
+	pub kind: tokens::Kind,
+	pub pos: tokens::Position
+}
+
+impl Stmt {
+	pub fn pos(&self) &tokens::Position {
+		switch (self) is {
+			EmptyStmt => return &(self as &EmptyStmt).pos;
+			LabelStmt => return &(self as &LabelStmt).pos;
+			GotoStmt => return &(self as &GotoStmt).pos;
+			AssignStmt => return &(self as &AssignStmt).pos;
+			Block => return &(self as &Block).pos;
+			DeferStmt => return &(self as &DeferStmt).pos;
+			IfStmt => return &(self as &IfStmt).pos;
+			ExprStmt => return &(self as &ExprStmt).pos;
+			LoopStmt => return &(self as &LoopStmt).pos;
+			WhileStmt => return &(self as &WhileStmt).pos;
+			DoWhileStmt => return &(self as &DoWhileStmt).pos;
+			ForInStmt => return &(self as &ForInStmt).pos;
+			SwitchStmt => return &(self as &SwitchStmt).pos;
+			ReturnStmt => return &(self as &ReturnStmt).pos;
+			RaiseStmt => return &(self as &RaiseStmt).pos;
+			BranchStmt => return &(self as &BranchStmt).pos;
+		}
+		return &EMPTY_POSITION;
+	}
+
+	pub fn to_str(&self) str {
+		return "<STMT-TO-STR>";
+	}
+}

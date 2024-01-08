@@ -1,0 +1,268 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::{panic, path};
+use std::console::eprintln;
+
+use src::ast;
+use src::pref;
+use src::utils;
+use src::tokens;
+use src::tokenizer;
+
+pub struct Parser {
+	prefs: &pref::Preferences,
+	mut table: &ast::Table,
+
+	path: str,
+	kind: ast::SourceKind,
+	mut imports: vec[ast::ImportData],
+
+	mut tokenizer: Box<tokenizer::Tokenizer>,
+	mut prev_tok: tokens::Token,
+	mut tok: tokens::Token,
+	mut peek_tok: tokens::Token,
+
+	gscope: &ast::Scope,
+	mut fnscope: ?&ast::Scope, // for labels
+	mut scope: ?&ast::Scope,
+
+	mut self_type: ast::Type,
+	mut sym: ast::Symbol,
+
+	mut inside_unsafe: bool,
+	mut inside_loop: bool,
+	mut inside_impl: bool,
+	mut inside_extern: bool,
+	mut inside_test: bool,
+	mut inside_defer: bool,
+
+	mut use_base: bool,
+
+	mut typ_level: i32,
+	mut mods: str,
+
+	mut should_abort: bool
+}
+
+impl Parser {
+	pub fn parse_file(
+		prefs: &pref::Preferences, table: &ast::Table, path: str
+	) Box<ast::SourceFile> {
+		let mut p = Parser{
+			prefs: prefs,
+			table: table,
+			path: path,
+			kind: ast::get_sf_kind(path),
+			tokenizer: tokenizer::Tokenizer::new_from_file(path, prefs),
+			gscope: table.gmod.scope
+		};
+		p.set_sym();
+		p.set_scope();
+		return p.parse();
+	}
+
+	pub fn parse_files(
+		prefs: &pref::Preferences, table: &ast::Table, paths: vec[str]
+	) vec[Box<ast::SourceFile>] {
+		let mut sfs = vec[Box<ast::SourceFile>]::new();
+		for (path in paths) {
+			push!(sfs, Parser::parse_file(prefs, table, path));
+		}
+
+		for (i in 0..sfs.len) {
+			let sf = sfs[i];
+			for (i_d in sf.imports) {
+				let mut p = Parser{
+					prefs: prefs,
+					table: table,
+					path: i_d.path,
+					kind: ast::get_sf_kind(i_d.path),
+					tokenizer: tokenizer::Tokenizer::new_from_file(i_d.path, prefs),
+					sym: i_d.sym,
+					gscope: table.gmod.scope,
+					scope: i_d.scope,
+					mods: i_d.mods
+				};
+				push!(sfs, p.parse());
+			}
+		}
+
+		return sfs;
+	}
+
+	fn next(mut &self) {
+		self.prev_tok = self.tok;
+		self.tok = self.peek_tok;
+		self.peek_tok = self.tokenizer.next();
+	}
+
+	@[inline]
+	fn peek_token(&self, n: i32) tokens::Token {
+		return self.tokenizer.peek_token(n - 2);
+	}
+
+	fn accept(mut &self, kind: tokens::Kind) bool {
+		if (kind == self.tok.kind) {
+			self.next();
+			return true;
+		}
+		return false;
+	}
+
+	fn check(mut &self, kind: tokens::Kind) {
+		if (self.accept(kind)) {
+			return;
+		}
+		let mut kstr = kind.to_str();
+		if (tokens::Token::is_key(kstr) or (kstr.len > 0 and !kstr[0].is_letter())) {
+			kstr = fmt!("`{}`", kstr);
+		}
+		self.error(fmt!("expected {}, found {}", kstr, self.tok));
+		self.next();
+	}
+
+	@[inline]
+	fn open_scope(mut &self) {
+		self.scope = ast::Scope::new(self.scope, self.tok.pos.pos);
+	}
+
+	fn close_scope(mut &self) {
+		self.scope.?.end_pos = self.prev_tok.pos.pos;
+		push!(self.scope.?.parent.?.childrens, self.scope.?);
+		self.scope = self.scope.?.parent;
+	}
+
+	fn gmods(&self) str {
+		return self.mods.replace("::", "__");
+	}
+
+	fn make_gname(&self, name: str) str {
+		let gm = self.gmods();
+		if (gm.len > 0) {
+			return fmt!("{}__{}", gm, name);
+		}
+		return name;
+	}
+
+	@[inline]
+	fn cut_mods(mut &self) {
+		self.mods = self.mods.all_before_last("::");
+	}
+
+	fn add_modname(mut &self, name: str) {
+		if (self.mods.len == 0) {
+			self.mods = name;
+		} else {
+			self.mods += fmt!("::{}", name);
+		}
+	}
+
+	@[inline]
+	fn has_mod(&self) bool {
+		return self.mods.len > 0;
+	}
+
+	fn load_mod(mut &self, name: str, pos: tokens::Position) {
+		let dirname = path::dirname(self.path);
+		let fullpath = path::join(dirname, name);
+		if (path::is_dir(fullpath)) {
+			let files = utils::load_glaz_files_from(fullpath);
+			if (files.len == 0) {
+				self.error(fmt!("cannot import module `{}` (.glaz files not found)", name), &pos);
+			} else {
+				if (!path::is_file(path::join(fullpath, "mod.glaz"))) {
+					self.error(
+						fmt!("cannot import module `{}` (`mod.glaz` file not found)", name), &pos
+					);
+				}
+				for (f in files) {
+					push!(self.imports, ast::ImportData{
+						scope: ast::Scope::new(self.scope),
+						mods: self.mods,
+						path: f,
+						sym: self.get_sym(self.sym, f)
+					});
+				}
+			}
+		} elif (path::is_file(fullpath + ".glaz")) {
+			self.error(fmt!("cannot import module `{}` (is a file)", name), &pos);
+		} else {
+			self.error(fmt!("cannot import module `{}` (not found)", name), &pos);
+		}
+	}
+
+	fn get_sym(&self, s: ast::Symbol, path: str) ast::Symbol {
+		switch (ast::get_sf_kind(path)) {
+			.Declaration => return &self.table.gmod;
+			else => return s;
+		}
+	}
+
+	@[inline]
+	fn log(&self, msg: str) {
+		if (self.prefs.is_verbose) eprintln(fmt!(">> {}", msg));
+	}
+
+	fn error(mut &self, msg: str, pos: &tokens::Position = &self.tok.pos) {
+		eprintln(utils::formatted_report("error", msg, pos));
+		self.table.err_c++;
+	}
+
+	@[inline]
+	fn warn(&self, msg: str, pos: &tokens::Position = &self.tok.pos) {
+		eprintln(utils::formatted_report("warning", msg, pos));
+	}
+
+	@[inline]
+	fn note(&self, msg: str) {
+		eprintln(utils::small_report("note", msg));
+	}
+
+	@[inline]
+	fn help(&self, msg: str) {
+		eprintln(utils::small_report("help", msg));
+	}
+
+	fn set_sym(mut &self) {
+		switch (self.kind) {
+			.Declaration => self.sym = &self.table.gmod;
+			else => self.sym = self.table.gmod.find(self.prefs.src_name).?.*;
+		}
+	}
+
+	fn set_scope(mut &self) {
+		switch (self.kind) {
+			.Declaration => self.scope = ast::Scope::new(self.table.gmod.scope);
+			.Default => {
+				if (let x = self.table.gmod.find(self.prefs.src_name)) {
+					self.scope = ast::Scope::new((x as &ast::Module).scope);
+				} else {
+					panic("parser: `src` module not found");
+				}
+				self.add_modname(self.prefs.src_name);
+			}
+		}
+	}
+
+	fn parse(mut &self) Box<ast::SourceFile> {
+		self.log(fmt!("parsing file `{}`", self.path));
+		for (_ in 0..2) self.next();
+
+		let modname = self.mods;
+		let decls = self.parse_declarations();
+		let sc = self.scope.?;
+
+		self.table.err_c += self.tokenizer.err_c;
+
+		return box!(ast::SourceFile{
+			file: self.path,
+			module: modname,
+			imports: self.imports,
+			decls: decls.clone(),
+			scope: sc,
+			sym: self.sym,
+			kind: self.kind
+		});
+	}
+}

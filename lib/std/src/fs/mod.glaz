@@ -1,0 +1,60 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+#include <dirent.h>
+#include <sys/stat.h>
+
+extern {
+	struct stat {
+		st_size: u64,
+		st_mode: u32,
+		st_mtime: i32
+	}
+
+	@[ccode(cname="stat")]
+	fn fn_stat(file: charptr, buf: *stat) i32;
+	fn lstat(file: charptr, buf: *stat) i32;
+
+	fn fopen(filename: charptr, modes: charptr) *FILE;
+	fn fclose(mut file: *FILE) i32;
+	fn fseek(file: *FILE, a: u64, b: i32) i32;
+	fn ftell(file: *FILE) i64;
+	fn rewind(file: *FILE);
+	fn fputs(s: charptr, mut f: *FILE) i32;
+	fn fread(mut x: rawptr, a: i32, c: i32, y: *FILE) i32;
+	fn fwrite(ptr: rawptr, item_size: usize, items: usize, mut stream: *C::FILE);
+	fn feof(f: *FILE) i32;
+	fn ferror(f: *FILE) i32;
+
+	fn mkdir(x: charptr, y: i32) i32;
+	fn chdir(a: charptr) i32;
+	fn rmdir(a: charptr) i32;
+	fn remove(a: charptr) i32;
+	fn access(a: charptr, o: i32) i32;
+	fn getcwd(a: charptr, o: i32) i32;
+	fn rename(a: charptr, b: charptr) i32;
+	fn realpath(a: charptr, b: charptr) charptr;
+
+	struct dirent {
+		d_name: *u8
+	}
+
+	fn opendir(d: charptr) rawptr;
+	fn readdir(d: rawptr) *dirent;
+	fn closedir(d: rawptr) i32;
+}
+
+// wrap C::fread and handles error and end-of-file detection.
+fn fread(mut ptr: rawptr, item_size: i32, items: i32, stream: *C::FILE) !i32 {
+	let nbytes = unsafe { C::fread(ptr, item_size, items, stream) };
+	// If no bytes were read, check for errors and end-of-file.
+	if (nbytes <= 0) unsafe {
+		if (C::feof(stream) != 0) {
+			raise "EOF";
+		}
+		if (C::ferror(stream) != 0) {
+			raise "file read error";
+		}
+	}
+	return nbytes;
+}

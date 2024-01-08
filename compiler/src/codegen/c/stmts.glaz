@@ -1,0 +1,584 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+use src::utils;
+use src::tokens::Kind;
+
+impl Gen {
+    fn gen_stmts(mut &self, stmts: vec[ast::Stmt]) {
+        for (stmt in stmts) {
+            self.gen_stmt(stmt);
+        }
+    }
+
+    fn gen_stmt(mut &self, stmt: ast::Stmt) {
+        self.set_current_pos_as_last_stmt_pos();
+        switch (stmt) is {
+            ast::LabelStmt => {
+                let old_i = self.indent;
+                self.indent = 0;
+                self.writeln(self.escape_c_name(cast(stmt, &ast::LabelStmt).label) + ": {}");
+                self.indent = old_i;
+            }
+            ast::GotoStmt => {
+                let g = stmt as &ast::GotoStmt;
+                self.writeln(fmt!("goto {};", self.escape_c_name(g.label)));
+            }
+            ast::AssignStmt => {
+                self.gen_assign_stmt(stmt as &ast::AssignStmt);
+            }
+            ast::LoopStmt => {
+                let l = stmt as &ast::LoopStmt;
+                self.writeln("for (;;) {");
+                self.indent++;
+                self.gen_stmt(l.stmt);
+                self.indent--;
+                self.writeln("}");
+            }
+            ast::WhileStmt => {
+                let w = stmt as &ast::WhileStmt;
+                self.write("while (");
+                self.gen_expr(w.cond);
+                self.writeln(") {");
+                self.indent++;
+                self.gen_stmt(w.stmt);
+                self.indent--;
+                self.writeln("}");
+            }
+            ast::DoWhileStmt => {
+                let w = stmt as &ast::DoWhileStmt;
+                self.writeln("do {");
+                self.indent++;
+                self.gen_stmt(w.stmt);
+                self.indent--;
+                self.write("} while (");
+                self.gen_expr(w.cond);
+                self.writeln(");");
+            }
+            ast::ForInStmt => {
+                let mut f = stmt as &ast::ForInStmt;
+                let key_name = if (f.key == "_") self.mktmp() else f.key;
+                let val_name = if (f.value == "_") self.mktmp() else f.value;
+
+                let key_t = f.key_typ.to_cstr();
+                switch (f.expr) is {
+                    ast::RangeExpr => {
+                        let r = f.expr as &ast::RangeExpr;
+                        self.write(fmt!("for ({} {} = ", key_t, key_name));
+                        self.gen_expr(r.start);
+                        self.write(fmt!("; {} {} ", key_name, if (r.is_inclusive) "<=" else "<"));
+                        self.gen_expr(r.end);
+                        self.writeln(fmt!("; ++{}) /*for-in-range*/ {", key_name));
+                        self.indent++;
+                    }
+                    else => {
+                        let idx = if (f.has_value) key_name else self.mktmp();
+                        let ts = f.expr.typ().ts();
+                        let tmp = self.mktmp();
+                        let mut tmp_len = fmt!("{}->len", tmp);
+                        let mut dot = ".";
+
+                        let fexpr_typ = f.expr.typ();
+                        let styp = fexpr_typ.to_cstr();
+                        if (ts.kind == .Array) {
+                            self.write(fmt!("{} {} = ", styp, tmp));
+                            self.gen_expr(f.expr);
+                            self.writeln(";");
+                            tmp_len = (ts.info as &ast::ArrayInfo).size.to_str();
+                        } else {
+                            self.write(styp);
+                            if (fexpr_typ !is ast::Reference) {
+                                self.write("*");
+                            }
+                            self.write(fmt!(" {} = ", tmp));
+                            if (fexpr_typ !is ast::Reference) {
+                                self.ref(f.expr);
+                            } else {
+                                self.gen_expr(f.expr);
+                            }
+                            self.writeln(";");
+                            dot = "->";
+                        }
+
+                        if (ts.kind == .Map) {
+                            try f.scope.add(ast::Var{
+                                name: val_name,
+                                typ: f.value_typ
+                            }) catch {};
+                            let iter_tmp = self.mktmp();
+                            let val_styp = f.value_typ.to_cstr();
+                            let val_is_ptr = f.value_typ is ast::Reference;
+                            let indexer = self.mktmp();
+                            self.writeln(fmt!("std__MapIter {} = std__MapIter__new();", iter_tmp));
+                            self.writeln(
+                                fmt!("for (i32 {} = 0; {} < {}->len; ++{}) {", indexer, indexer,
+                                tmp, indexer)
+                            );
+                            self.indent++;
+                            self.writeln(fmt!("std__Str {} = std__Map__next({}, &{});", idx, tmp, iter_tmp));
+                            self.write(fmt!("{} {} = ", val_styp, val_name));
+                            if (f.boxed_value) {
+                                self.write(
+                                    fmt!("*CAST(std__Map__get({}, {}), {}", tmp, idx, val_styp)
+                                );
+                                if (!val_is_ptr) {
+                                    self.write("*");
+                                }
+                                self.writeln("*);");
+                            } else {
+                                if (!val_is_ptr) {
+                                    self.write("*");
+                                }
+                                self.write(
+                                    fmt!("CAST(std__Map__get({}, {}), {}", tmp, idx, val_styp)
+                                );
+                                if (!val_is_ptr) {
+                                    self.write("*");
+                                }
+                                self.writeln(");");
+                            }
+                        } else {
+                            self.writeln(
+                                fmt!(
+                                    "for (i32 {} = 0; {} < {}; ++{}) /*for-in-array*/ {",
+                                    idx, idx, tmp_len, idx
+                                )
+                            );
+                            self.indent++;
+                            let v = if (f.has_value) f.value else key_name;
+                            if (ts.kind == .Str) {
+                                self.writeln(fmt!("u8 {} = {}{}cstr[{}];", v, tmp, dot, idx));
+                            } elif (ts.kind == .Array) {
+                                let t = if (f.has_value) f.value_typ.to_cstr() else key_t;
+                                self.write(fmt!("{} {} = ", t, v));
+                                if (f.key_is_ref or f.value_is_ref) {
+                                    self.write("&");
+                                }
+                                self.writeln(fmt!("{}[{}];", tmp, idx));
+                            } elif (f.has_value) {
+                                try f.scope.add(ast::Var{
+                                    name: val_name,
+                                    typ: f.value_typ
+                                }) catch {};
+                                let val_styp = f.value_typ.to_cstr();
+                                self.write(fmt!("{} {} = ", val_styp, val_name));
+                                if (f.boxed_value) {
+                                    self.writeln(
+                                        fmt!(
+                                            "CAST({}{}data, {}*)[{}];",
+                                            tmp, dot, val_styp, idx
+                                        )
+                                    );
+                                } else {
+                                    self.write(fmt!("CAST({}{}data, {}", tmp, dot, val_styp));
+                                    if (!f.value_is_ref) {
+                                        self.write("*");
+                                    }
+                                    self.write(")");
+                                    if (f.value_is_ref) {
+                                        self.writeln(fmt!(" + {};", idx));
+                                    } else {
+                                        self.writeln(fmt!("[{}];", idx));
+                                    }
+                                }
+                            } else {
+                                try f.scope.add(ast::Var{
+                                    name: key_name,
+                                    typ: f.key_typ
+                                }) catch {};
+                                self.write(fmt!("{} {} = ", key_t, key_name));
+                                if (f.boxed_value) {
+                                    self.writeln(
+                                        fmt!(
+                                            "CAST({}{}data, {}*)[{}];",
+                                            tmp, dot, key_t, idx
+                                        )
+                                    );
+                                } else {
+                                    self.write(fmt!("CAST({}{}data, {}", tmp, dot, key_t));
+                                    if (!f.key_is_ref) {
+                                        self.write("*");
+                                    }
+                                    self.write(")");
+                                    if (f.key_is_ref) {
+                                        self.writeln(fmt!(" + {};", idx));
+                                    } else {
+                                        self.writeln(fmt!("[{}];", idx));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                self.gen_stmt(f.stmt);
+                self.autodrop(f.scope);
+                self.indent--;
+                self.writeln("}");
+            }
+            ast::SwitchStmt => {
+                let s = stmt as &ast::SwitchStmt;
+                let cond_t = s.cond.typ();
+                let ts = cond_t.ts();
+                let styp = cond_t.to_cstr();
+                let dot = if (cond_t is ast::Reference) "->" else ".";
+                let tmp = self.mktmp();
+                self.write(fmt!("{} {} = ", styp, tmp));
+                self.gen_expr(s.cond);
+                self.writeln(";");
+                for (i, &branch in s.branches) {
+                    if (branch.is_else) {
+                        self.writeln(" else {");
+                    } else {
+                        if (i > 0) {
+                            self.write(" else ");
+                        }
+                        self.write("if ((");
+                        for (j, expr in branch.exprs) {
+                            let expr_hash = expr.typ().basic_hash();
+                            switch {
+                                cond_t.eq(self.table.str_t) => {
+                                    self.write(fmt!("std__Str__eq({}, ", tmp));
+                                    self.gen_expr(expr);
+                                    self.write(")");
+                                }
+                                ts.kind in vec[ast::TypeKind]{.Struct, .SumType} => {
+                                    self.write(fmt!("({}{}_typ == {})", tmp, dot, expr_hash));
+                                }
+                                else => {
+                                    self.write(fmt!("{} == (", tmp));
+                                    self.gen_expr(expr);
+                                    self.write(")");
+                                }
+                            }
+                            if (j < branch.exprs.len - 1) {
+                                self.write(" || ");
+                            }
+                        }
+                        self.write(")");
+                        if (branch.has_cond) {
+                            self.write(" && (");
+                            self.gen_expr(branch.cond);
+                            self.write(")");
+                        }
+                        self.writeln(") {");
+                    }
+                    self.set_current_pos_as_last_stmt_pos();
+                    self.indent++;
+                    self.gen_stmt(branch.stmt);
+                    self.indent--;
+                    _ = pop!(self.stmt_path_pos);
+                    self.write("}");
+                }
+                self.writeln(";");
+            }
+            ast::IfStmt => {
+                let i = stmt as &ast::IfStmt;
+                if (i.is_comptime) {
+                    self.gen_comptime_if(i);
+                } else {
+                    for (&b in i.branches) {
+                        let mut free_tmp = false;
+                        let mut free_name = "";
+                        if (b.is_else) {
+                            self.writeln(" else {");
+                            self.indent++;
+                        } else {
+                            self.write(fmt!("{} (", if (b.kind == .KeyElif) " else if" else "if"));
+                            if (b.cond is ast::GuardExpr) {
+                                let tmp = self.mktmp();
+                                let l = self.go_before_stmt();
+                                let gexpr = cast(b.cond, &ast::GuardExpr);
+                                let indirect = gexpr.expr_typ is ast::Optional and !(gexpr.expr_typ.parent().is_pointer() or gexpr.expr_typ.parent() is ast::Reference);
+                                self.empty_line = true;
+                                self.writeln(fmt!("{} {};", gexpr.expr_typ.to_cstr(), tmp));
+                                self.empty_line = true;
+                                self.write(l);
+                                self.write(fmt!("{} = ", tmp));
+                                self.gen_expr(gexpr.expr);
+                                if (gexpr.expr_typ is ast::Optional) {
+                                    self.write(fmt!(", {} != NULL", tmp));
+                                } else {
+                                    self.write(fmt!(", {}.ok", tmp));
+                                    if (gexpr.expr_typ.parent() is ast::Optional) {
+                                        self.write(fmt!(" && {}.value != NULL", tmp));
+                                    }
+                                }
+                                self.writeln(") {");
+                                if (indirect) {
+                                    free_tmp = gexpr.expr is ast::CallExpr;
+                                    free_name = tmp;
+                                }
+                                self.indent++;
+                                let styp = gexpr.name_typ.to_cstr();
+                                let var_name = if (gexpr.name == "_") self.mktmp() else gexpr.name;
+                                self.write(fmt!("{} {} = ", styp, var_name));
+                                if (indirect) {
+                                    self.write("*");
+                                }
+                                if (gexpr.expr_typ is ast::Optional) {
+                                    self.writeln(fmt!("{};", tmp));
+                                } else {
+                                    self.writeln(fmt!("{}.value;", tmp));
+                                }
+                            } else {
+                                self.gen_expr(b.cond);
+                                self.writeln(") {");
+                                self.indent++;
+                            }
+                        }
+                        self.gen_stmt(b.stmt);
+                        if (free_tmp) {
+                            self.writeln(fmt!("std__mem__free({});", free_name));
+                        }
+                        self.indent--;
+                        self.write("}");
+                    }
+                    self.writeln(";");
+                }
+            }
+            ast::Block => {
+                let b = stmt as &ast::Block;
+                if (b.is_unsafe) {
+                    self.write("/* unsafe */ ");
+                }
+                self.writeln("{");
+                self.indent++;
+                self.gen_stmts(b.stmts);
+
+                if (b.stmts.len > 0) {
+                    let last_stmt = b.stmts[b.stmts.len - 1];
+                    if (last_stmt !is ast::ReturnStmt and last_stmt !is ast::RaiseStmt) {
+                        self.autodrop(b.scope);
+                    }
+                }
+                self.indent--;
+                self.writeln("}");
+            }
+            ast::ReturnStmt => {
+                let r = stmt as &ast::ReturnStmt;
+
+                if (self.inside_test) {
+                    self.writeln(
+                        fmt!(
+                            "test_framework__print_test_skip(_SLIT(\"{}\"));",
+                            utils::smart_quote(self.ctest.name)
+                        )
+                    );
+                    self.writeln("SKIP_TESTS++;");
+                }
+
+                let tmp = if (r.has_expr) self.mktmp() else "";
+                if (r.has_expr) {
+                    self.write(fmt!("{} {} = ", self.func.ret_typ.to_cstr(), tmp));
+                    if (self.func.ret_typ is ast::Result) {
+                        self.write(fmt!("OK_RES({}, (", self.func.ret_typ.to_gstr()));
+                    }
+                    self.gen_expr_with_cast(r.expr, self.func.ret_typ);
+                    if (self.func.ret_typ is ast::Result) {
+                        self.write("))");
+                    }
+                    self.writeln(";");
+                }
+
+                self.write_defer_stmts();
+                self.autodrop(r.scope);
+                if (self.func.ret_typ is ast::Result) {
+                    if (r.has_expr) {
+                        self.writeln(fmt!("return {};", tmp));
+                    } else {
+                        self.gen_return_empty_result();
+                    }
+                } else {
+                    self.write("return");
+                    if (r.has_expr) {
+                        self.write(" " + tmp);
+                    }
+                    self.writeln(";");
+                }
+            }
+            ast::RaiseStmt => {
+                let r = stmt as &ast::RaiseStmt;
+                let tmp = self.mktmp();
+                self.write(fmt!("{} {} = ", self.func.ret_typ.to_cstr(), tmp));
+                self.write(fmt!("ERR_RES({}, (", self.func.ret_typ.to_gstr()));
+                self.gen_expr(r.msg);
+                self.write("), ");
+                if (r.code is ast::EmptyExpr) {
+                    self.write("0");
+                } else {
+                    self.gen_expr(r.code);
+                }
+                self.writeln(");");
+                self.write_defer_stmts();
+                self.autodrop(r.scope);
+                self.writeln(fmt!("return {};", tmp));
+            }
+            ast::BranchStmt => {
+                let b = stmt as &ast::BranchStmt;
+                if (b.kind == .KeyContinue) {
+                    self.writeln("continue;");
+                } else {
+                    self.writeln("break;");
+                }
+            }
+            ast::ExprStmt => {
+                let e = stmt as &ast::ExprStmt;
+                self.gen_expr(e.expr);
+                self.writeln(";");
+            }
+            ast::DeferStmt => {
+                let d = stmt as &ast::DeferStmt;
+                self.writeln(fmt!("{} = true;", d.defer_var));
+                push!(self.defer_stmts, d);
+            }
+            else => {}
+        }
+        if (self.stmt_path_pos.len > 0) {
+            _ = pop!(self.stmt_path_pos);
+        }
+    }
+
+    fn gen_assign_stmt_left(
+        mut &self, obj: ast::Expr, right: ast::Expr, op: Kind, is_decl: bool
+    ) {
+        if (obj is ast::TupleLiteral) {
+            let tl = obj as &ast::TupleLiteral;
+            let mut tmp = "";
+            if (right !is ast::TupleLiteral) {
+                let l = self.go_before_stmt();
+                tmp = self.mktmp();
+                self.write(fmt!("{} {} = ", right.typ().to_cstr(), tmp));
+                self.gen_expr(right);
+                self.writeln(";");
+                self.write(l);
+            }
+            for (i, lobj in tl.exprs) {
+                if (right is ast::TupleLiteral) {
+                    let rtl = right as &ast::TupleLiteral;
+                    self.gen_assign_stmt_left(lobj, rtl.exprs[i], op, is_decl);
+                } else {
+                    let ls = ast::SelectorExpr{
+                        ...(tl.tmp_exprs[i] as &ast::SelectorExpr).*,
+                        left: ast::Ident{
+                            name: tmp,
+                            is_obj: true,
+                            resolved: true
+                        }
+                    };
+                    self.gen_assign_stmt_left(lobj, ls, op, is_decl);
+                }
+            }
+        } elif (obj is ast::IndexExpr) {
+            let obj_typ = obj.typ();
+            let idx = obj as &ast::IndexExpr;
+            let ts = idx.left_typ.ts();
+            switch (ts.kind) {
+                .Vector => {
+                    let info = (ts.info as &ast::VectorInfo);
+                    self.write("std__Vec__set(");
+                    self.ref(idx.left);
+                    self.write(", ");
+                    self.gen_expr(idx.index);
+                    self.write(fmt!(", ADDR({}, ", info.elem_typ.to_cstr()));
+                    self.gen_expr_with_cast(right, info.elem_typ);
+                    self.write("))");
+                }
+                .Map => {
+                    let info = (ts.info as &ast::MapInfo);
+                    self.write("std__Map__set(");
+                    self.ref(idx.left);
+                    self.write(", ");
+                    self.gen_expr(idx.index);
+                    self.write(fmt!(", ADDR({}, ", info.val_typ.to_cstr()));
+                    self.gen_expr_with_cast(right, info.val_typ);
+                    self.write("))");
+                }
+                else => {
+                    self.gen_expr(obj);
+                    self.write(fmt!(" {} ", op));
+                    self.gen_expr_with_cast(right, obj_typ);
+                }
+            }
+        } else {
+            let is_blank_ident = obj is ast::Ident and (obj as &ast::Ident).name == "_";
+            let obj_typ = if (is_blank_ident) right.typ() else obj.typ();
+            if (is_blank_ident) {
+                self.write(fmt!("{ {} _ ", obj_typ.to_cstr()));
+            } else {
+                if (is_decl) {
+                    self.write(fmt!("{} ", obj_typ.to_cstr()));
+                }
+                self.gen_expr(obj);
+            }
+            if (op == .PlusAssign and obj_typ.eq(self.table.str_t)) {
+                self.write(" = std__Str__add(");
+                self.gen_expr(obj);
+                self.write(", ");
+                self.gen_expr(right);
+                self.write(")");
+            } else {
+                self.write(fmt!(" {} ", op));
+                if (is_blank_ident) {
+                    self.gen_expr(right);
+                    self.write("; }");
+                } else {
+                    self.gen_expr_with_cast(right, obj_typ);
+                }
+            }
+        }
+        self.writeln(";");
+    }
+
+    fn gen_assign_stmt(mut &self, stmt: &ast::AssignStmt) {
+        for (i, obj in stmt.left) {
+            self.gen_assign_stmt_left(obj, stmt.right[i], stmt.op, stmt.is_decl);
+        }
+    }
+
+    fn gen_return_empty_result(mut &self) {
+        let parent = self.func.ret_typ.parent();
+        if (parent.eq(ast::VOID_T)) {
+            self.writeln("return OK_RES_VOID; // empty return");
+        } else {
+            self.set_current_pos_as_last_stmt_pos();
+            self.write(fmt!("return OK_RES({}, (", self.func.ret_typ.to_gstr()));
+            self.default_value(parent);
+            self.writeln("));");
+            _ = pop!(self.stmt_path_pos);
+        }
+    }
+
+    fn write_defer_stmts(mut &self) {
+        if (self.defer_stmts.len > 0) {
+            let mut i = self.defer_stmts.len - 1;
+            while (i >= 0) {
+                let defer_stmt = self.defer_stmts[i];
+                self.writeln("// defer begin");
+                self.writeln(fmt!("if ({}) {", defer_stmt.defer_var));
+                self.indent++;
+                self.gen_stmt(defer_stmt.stmt);
+                self.indent--;
+                self.writeln("}");
+                self.writeln("// defer end");
+                i--;
+            }
+        }
+    }
+
+    fn gen_comptime_if(mut &self, node: &ast::IfStmt) {
+        if (node.branch_idx > -1) {
+            let b = &node.branches[node.branch_idx];
+            let gen_block = b.stmt !is ast::Block;
+            if (gen_block) {
+                self.writeln("{");
+                self.indent++;
+            }
+            self.gen_stmt(b.stmt);
+            if (gen_block) {
+                self.indent--;
+                self.writeln("}");
+            }
+        }
+    }
+}

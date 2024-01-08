@@ -1,0 +1,315 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::tokens;
+use src::ast::{ self, TypeKind };
+
+impl Checker {
+	fn check_compatible_types(&self, got: ast::Type, expected: ast::Type) ! {
+		if (!self.check_types(got, expected) and (expected.neq(ast::VOID_T)
+			and got.neq(ast::VOID_T))) {
+			let mut got_str = got.to_str();
+			if (got.eq(self.table.null_t)) {
+				got_str = expected.to_str();
+				if (expected !is ast::Optional) {
+					got_str += "?";
+				}
+			}
+			raise fmt!("expected type `{}`, found `{}`", expected, got_str);
+		}
+	}
+
+	fn check_types(&self, got: ast::Type, expected: ast::Type) bool {
+		if (!(expected is ast::Optional or expected.is_rawptr()
+			or expected.eq(self.table.null_t)) and got is ast::Optional) {
+			return false;
+		}
+
+		let e_ts = expected.ts();
+		let g_ts = got.ts();
+
+		if (expected is ast::Optional and (
+			(got.eq(self.table.untyped_int_t) and expected.parent().is_int())
+			or (got.eq(self.table.untyped_float_t) and expected.parent().is_float())
+		)) {
+			return true;
+		}
+
+		if (
+			((expected is ast::Optional or expected.is_pointer())
+			and (got.eq(self.table.null_t) or got is ast::Optional))
+			or ((got is ast::Optional or got.is_pointer())
+			and (expected.eq(self.table.null_t) or expected is ast::Optional))
+		) {
+			return true;
+		} elif (expected is ast::Optional and got !is ast::Optional) {
+			return self.check_types(got, expected.parent());
+		}
+
+		if (expected.is_rawptr() and (got is ast::Reference or got.is_pointer())) {
+			return true;
+		}
+
+		if (expected is ast::Reference and g_ts.kind == .BoxT) {
+			// boxed values are allocated on the heap, so this is fine
+			if (self.check_types((g_ts.info as &ast::BoxInfo).elem_typ.ref(), expected)) {
+				return true;
+			}
+		}
+
+		if (expected is ast::Variadic) {
+			if (got is ast::Variadic) {
+				if (got.parent().eq(expected.parent())) {
+					return true;
+				}
+			} else {
+				let et = expected.parent();
+				if (self.check_types(got.parent(), et)) {
+					return true;
+				}
+			}
+		}
+
+		// inherited structs
+		if ((e_ts.kind == .Struct and g_ts.kind == .Struct)
+			and (expected is ast::Reference and got is ast::Reference)) {
+			if (self.is_sub_struct_of(g_ts, e_ts)) {
+				return true;
+			}
+		}
+
+		if (e_ts.kind == .Struct and expected is ast::Reference and g_ts.kind == .BoxT) {
+			let gts = (g_ts.info as &ast::BoxInfo).elem_typ.ts();
+			if (self.is_sub_struct_of(gts, e_ts)) {
+				return true;
+			}
+		}
+
+		if (expected is ast::Reference and got is ast::Reference) {
+			if (!self.check_types(got.parent(), expected.parent())) {
+				return false;
+			}
+		}
+
+		if ((expected.eq(self.table.charptr_t) and got.eq(self.table.u8ptr_t))
+			or (got.eq(self.table.charptr_t) and expected.eq(self.table.u8ptr_t))) {
+			return false; // signed char vs unsigned char
+		} elif (expected is ast::Pointer and got is ast::Pointer) {
+			if (!self.check_types(got.parent(), expected.parent())) {
+				return false;
+			}
+		}
+
+		if (g_ts.module == "std") {
+			if (e_ts.kind == .Vector and g_ts.name == "Vec") {
+				return true; // compatible
+			} elif (e_ts.kind == .Str and g_ts.name == "Str") {
+				return true; // compatible
+			}
+		}
+
+		if (e_ts.kind == .BoxT and g_ts.kind == .BoxT) {
+			let et = (e_ts.info as &ast::BoxInfo).elem_typ;
+			let gt = (g_ts.info as &ast::BoxInfo).elem_typ;
+			if (et.eq(gt)) {
+				return true;
+			} else {
+				let gts = gt.ts();
+				let ets = et.ts();
+				if (gts.kind == .Struct and ets.kind == .Struct
+					and self.is_sub_struct_of(gts, ets)) {
+					// inherited structs!
+					return true;
+				}
+			}
+		}
+
+		if (e_ts.kind == .SumType) {
+			let st = (e_ts.info as &ast::SumTypeInfo);
+			let g = if (got is ast::Reference) got.deref() else got;
+			if (st.contains(self.untyped_to_real_type(g))) {
+				return true;
+			}
+		}
+
+		if ((expected is ast::Reference and got !is ast::Reference)
+			or (got is ast::Reference and expected !is ast::Reference)) {
+			return false;
+		}
+
+		if (expected.is_number() and got.is_number()) {
+			if ((expected.eq(self.table.untyped_int_t) and got.is_int())
+				or (expected.eq(self.table.untyped_float_t) and got.is_float())) {
+				return true;
+			}
+			if (self.promote_number(expected, got).eq(expected)) {
+				return true;
+			}
+		}
+
+		if (e_ts.kind == .Alias) {
+			let ei = e_ts.info as &ast::AliasInfo;
+			return self.check_types(got, ei.parent);
+		} elif (g_ts.kind == .Alias) {
+			let gi = g_ts.info as &ast::AliasInfo;
+			return self.check_types(gi.parent, expected);
+		}
+
+		if (g_ts.kind == .Array and e_ts.kind == .Array) {
+			let ginfo = (g_ts.info as &ast::ArrayInfo);
+			let einfo = (e_ts.info as &ast::ArrayInfo);
+			return einfo.elem_typ.eq(ginfo.elem_typ) and ginfo.size.to_str() == einfo.size.to_str();
+		}
+
+		if (g_ts.kind == .Vector and e_ts.kind == .Vector) {
+			let et = (e_ts.info as &ast::VectorInfo).elem_typ;
+			let gt = (g_ts.info as &ast::VectorInfo).elem_typ;
+			if (et.eq(gt)) return true;
+		}
+
+		if (g_ts.kind == .Slice and e_ts.kind == .Slice) {
+			let et = (e_ts.info as &ast::SliceInfo).elem_typ;
+			let gt = (g_ts.info as &ast::SliceInfo).elem_typ;
+			if (et.eq(gt)) return true;
+		}
+
+		if (g_ts.kind == .Map and e_ts.kind == .Map) {
+			let et = (e_ts.info as &ast::MapInfo).val_typ;
+			let gt = (g_ts.info as &ast::MapInfo).val_typ;
+			if (et.eq(gt)) return true;
+		}
+
+		if (g_ts.kind == .Tuple and e_ts.kind == .Tuple) {
+			let einfo = e_ts.info as &ast::TupleInfo;
+			let ginfo = g_ts.info as &ast::TupleInfo;
+			if (ginfo.fields.len != einfo.fields.len) {
+				return false;
+			}
+			for (i in 0..einfo.fields.len) {
+				if (ginfo.fields[i].neq(einfo.fields[i])) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		if ((expected.is_pointer() and got is ast::SimpleType and got.is_int())
+			or (got.is_pointer() and expected is ast::SimpleType and expected.is_int())) {
+			return true;
+		} elif ((!expected.is_pointer() and got.is_pointer())
+			or (!got.is_pointer() and expected.is_pointer())) {
+			return false;
+		}
+
+		return expected.eq(got);
+	}
+
+	fn is_sub_struct_of(&self, g_ts: &ast::TypeSymbol, ts: &ast::TypeSymbol) bool {
+		if (g_ts.kind != .Struct or ts.kind != .Struct) {
+			return false;
+		}
+		let g_sinfo = g_ts.info as &ast::StructInfo;
+		let mut gbase_ts = g_sinfo.base_ts();
+		if (gbase_ts != null) {
+			while (gbase_ts != null) {
+				if (gbase_ts.? == ts) {
+					return true;
+				}
+				let gbase_info = gbase_ts.?.info as &ast::StructInfo;
+				gbase_ts = gbase_info.base_ts();
+			}
+		}
+		return false;
+	}
+
+	fn promote(&self, ltyp: ast::Type, rtyp: ast::Type) ast::Type {
+		if (ltyp.is_pointer()) {
+			if (rtyp.is_int()) {
+				return ltyp;
+			}
+			return ast::VOID_T;
+		} elif (rtyp.is_pointer()) {
+			if (ltyp.is_int()) {
+				return rtyp;
+			}
+			return ast::VOID_T;
+		}
+		if (ltyp.eq(rtyp)) {
+			return ltyp;
+		}
+		if (rtyp.is_int() and ltyp.is_int()) {
+			return self.promote_number(ltyp, rtyp);
+		} elif (ltyp is ast::Optional != rtyp is ast::Optional) {
+			return ast::VOID_T;
+		}
+		return ltyp;
+	}
+
+	fn promote_number(&self, expected: ast::Type, got: ast::Type) ast::Type {
+		let mut type_hi = expected;
+		let mut type_lo = got;
+		if (type_hi.ts().kind < type_lo.ts().kind) {
+			let old_hi = type_hi;
+			type_hi = type_lo;
+			type_lo = old_hi;
+		}
+		let kind_hi = type_hi.ts().kind;
+		let kind_lo = type_lo.ts().kind;
+		switch {
+			// numeric literals -> int/float type (good)
+			kind_hi == .UntypedInt => {
+				return type_lo;
+			}
+			kind_hi == .UntypedFloat => {
+				if (type_lo.is_float()) {
+					return type_lo;
+				} else {
+					return ast::VOID_T;
+				}
+			}
+			// float -> float (good)
+			type_hi.is_float() => {
+				if (type_hi.eq(self.table.f32_t)) {
+					if (kind_lo in vec[TypeKind]{.I64, .U64}) {
+						return ast::VOID_T;
+					}
+					return type_hi;
+				} else { // f64, untyped_float (good)
+					return type_hi;
+				}
+			}
+			// unsigned number -> unsigned number (good)
+			kind_lo >= .U8 => {
+				return type_hi;
+			}
+			// signed number -> signed number (good)
+			kind_lo >= .I8 and (kind_hi <= .Isize or kind_hi == .Rune) => {
+				return if (kind_lo == .I64) type_lo else type_hi;
+			}
+			// unsigned number -> signed number (good, if signed type is larger)
+			kind_hi - kind_lo < (ast::TypeKind::U8 - .I8) => {
+				return type_lo;
+			}
+			// signed number -> unsigned number (bad)
+			else => {
+				return ast::VOID_T;
+			}
+		}
+	}
+
+	fn check_shift(
+		mut &self, ltyp: ast::Type, rtyp: ast::Type, lpos: &tokens::Position,
+		rpos: &tokens::Position
+	) ast::Type {
+		if (!ltyp.is_int()) {
+			self.error(fmt!("cannot shift on type `{}`", ltyp), lpos);
+			return ast::VOID_T;
+		} elif (!rtyp.is_int()) {
+			self.error(
+				fmt!("cannot shift non-integer type `{}` into type `{}`", rtyp, ltyp), rpos
+			);
+			return ast::VOID_T;
+		}
+		return ltyp;
+	}
+}

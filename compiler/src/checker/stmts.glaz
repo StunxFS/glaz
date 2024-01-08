@@ -1,0 +1,719 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast::{self, TypeKind};
+use src::tokens::{self, Kind};
+
+const SWITCH_EXHAUSTIVE_CUTOFF_LIMIT: i32 = 12;
+
+impl Checker {
+	fn check_stmts(mut &self, mut stmts: vec[ast::Stmt]) {
+		let mut unreachable_pos = &tokens::Position{line: -1};
+		for (mut &stmt in stmts) {
+			if (self.scope_returns) {
+				if (unreachable_pos.line == -1) {
+					unreachable_pos = stmt.pos();
+				}
+			}
+			self.check_stmt(stmt);
+			if (stmt is ast::LabelStmt) {
+				unreachable_pos = &tokens::Position{line: -1};
+				self.scope_returns = false;
+			}
+		}
+		if (unreachable_pos.line >= 0) {
+			self.error("unreachable code", unreachable_pos);
+		}
+		self.scope_returns = false;
+	}
+
+	fn check_stmt(mut &self, mut stmt: &ast::Stmt) {
+		switch (stmt) is {
+			ast::AssignStmt => {
+				self.check_assign_stmt(stmt as &ast::AssignStmt);
+			}
+			ast::LoopStmt => {
+				let mut l = stmt as &ast::LoopStmt;
+				self.check_stmt(&l.stmt);
+				if (self.scope_returns) {
+					self.scope_returns = false;
+				}
+			}
+			ast::WhileStmt => {
+				let mut w = stmt as &ast::WhileStmt;
+				let ct = self.check_expr(&w.cond);
+				if (ct.neq(self.table.bool_t)) {
+					self.error(
+						"non-bool expression used as condition",
+						w.cond.pos()
+					);
+				}
+				self.check_stmt(&w.stmt);
+				if (self.scope_returns) {
+					self.scope_returns = false;
+				}
+			}
+			ast::DoWhileStmt => {
+				let mut w = stmt as &ast::DoWhileStmt;
+				let ct = self.check_expr(&w.cond);
+				if (ct.neq(self.table.bool_t)) {
+					self.error(
+						"non-bool expression used as condition",
+						w.cond.pos()
+					);
+				}
+				self.check_stmt(&w.stmt);
+				if (self.scope_returns) {
+					self.scope_returns = false;
+				}
+			}
+			ast::ForInStmt => {
+				let mut f = stmt as &ast::ForInStmt;
+				let expr_t = self.check_expr(&f.expr);
+				let ts = expr_t.ts();
+
+				let mut value_t = self.value_type(expr_t);
+				let value_ts = value_t.ts();
+				if (ts.kind == .Map) {
+					if (f.has_value) {
+						f.scope.update_var_type(f.key, self.table.str_t);
+						if (f.value_is_ref) {
+							if (value_t.is_pointer() or value_t is ast::Reference) {
+								self.error(
+									"cannot take the address of other reference",
+									&f.value_pos
+								);
+							} elif (value_ts.kind == .BoxT) {
+								value_t = (value_ts.info as &ast::BoxInfo).elem_typ.ref();
+								f.boxed_value = true;
+							} else {
+								value_t = value_t.ref();
+							}
+						} elif (value_ts.kind == .BoxT) {
+							self.error("cannot take ownership of a boxed value", &f.value_pos);
+							self.help("use a reference instead");
+						}
+						f.scope.update_var_type(f.value, value_t);
+						f.key_typ = self.table.str_t;
+						f.value_typ = value_t;
+					} else {
+						self.error("should use `for (k, v in map)` instead", &f.key_pos);
+						return;
+					}
+				} elif (ts.kind in vec[TypeKind]{.Array, .Vector, .Slice, .Str}
+					or f.expr is ast::RangeExpr) {
+					let is_local_value = self.is_local_value(&f.expr);
+					if (f.has_value) {
+						if (f.expr is ast::RangeExpr) {
+							self.error("unexpected name", &f.value_pos);
+							return;
+						}
+						if (f.value_is_ref) {
+							if (value_t.is_pointer() or value_t is ast::Reference) {
+								self.error(
+									"cannot take the address of other reference",
+									&f.value_pos
+								);
+							} elif (value_ts.kind == .BoxT) {
+								value_t = (value_ts.info as &ast::BoxInfo).elem_typ.ref();
+								f.boxed_value = true;
+							} else {
+								value_t = value_t.ref();
+							}
+						} elif (value_ts.kind == .BoxT) {
+							self.error("cannot take ownership of a boxed value", &f.value_pos);
+							self.help("use a reference instead");
+						}
+						f.scope.update_var_type(f.key, self.table.i32_t);
+						f.scope.update_var_type(f.value, value_t);
+						f.scope.update_var_is_local(f.value, is_local_value);
+						f.key_typ = self.table.i32_t;
+						f.value_typ = value_t;
+					} else {
+						if (f.key_is_ref) {
+							if (value_t.is_pointer() or value_t is ast::Reference) {
+								self.error(
+									"cannot take the address of other reference",
+									&f.key_pos
+								);
+							} elif (value_ts.kind == .BoxT) {
+								value_t = (value_ts.info as &ast::BoxInfo).elem_typ.ref();
+								f.boxed_value = true;
+							} else {
+								value_t = value_t.ref();
+							}
+						} elif (value_ts.kind == .BoxT) {
+							self.error("cannot take ownership of a boxed value", &f.key_pos);
+							self.help("use a reference instead");
+						}
+						f.scope.update_var_type(f.key, value_t);
+						f.scope.update_var_is_local(f.key, is_local_value);
+						f.key_typ = value_t;
+					}
+				} else {
+					self.error(fmt!("cannot iterate over {}", ts.kind), f.expr.pos());
+					self.note("expected map, array, vector, slice or string");
+					return;
+				}
+
+				if (f.key_is_mut) {
+					if (f.has_value) {
+						self.error("index of array or key of map cannot be mutated", &f.key_pos);
+					} elif (!f.key_is_ref and f.expr !is ast::RangeExpr and
+						!(f.key_typ.is_pointer() or f.key_typ is ast::Reference)
+					) {
+						self.error(fmt!("cannot use `{}` as mutable value", f.key), &f.key_pos);
+						self.help("use a mutable reference instead: mut &" + f.key);
+					} else {
+						self.check_var_mutable(&f.expr);
+					}
+				} elif (f.value_is_mut) {
+					if (!f.value_is_ref and
+						!(f.value_typ.is_pointer() or f.value_typ is ast::Reference)
+					) {
+						self.error(fmt!("cannot use `{}` as mutable value", f.value), &f.value_pos);
+						self.help("use a mutable reference instead: mut &" + f.value);
+					} else {
+						self.check_var_mutable(&f.expr);
+					}
+				}
+
+				self.check_stmt(&f.stmt);
+				if (self.scope_returns) {
+					self.scope_returns = false;
+				}
+			}
+			ast::SwitchStmt => self.check_switch_stmt(stmt as &ast::SwitchStmt);
+			ast::IfStmt => {
+				let mut i = stmt as &ast::IfStmt;
+				for (idx, mut &b in i.branches) {
+					if (i.is_comptime) {
+						if ((b.is_else and i.branch_idx != -1) or b.skip) {
+							continue;
+						}
+						i.branch_idx = idx;
+					}
+					if (!b.is_else) {
+						if (b.cond is ast::GuardExpr) {
+							let old_ige = self.inside_guard_expr;
+							self.inside_guard_expr = true;
+							let mut g = cast(b.cond, &ast::GuardExpr);
+							let mut gt = self.check_expr(&g.expr);
+							if (!(gt is ast::Result or gt is ast::Optional)) {
+								self.error(
+									"expression is not a result or optional value", &g.pos
+								);
+								return;
+							}
+							g.expr_typ = gt;
+							if (gt is ast::Result) {
+								gt = gt.non_result();
+							}
+							if (gt is ast::Optional) {
+								gt = gt.non_optional();
+							}
+							if (gt.eq(ast::VOID_T)) {
+								self.error("cannot use a `void` value", &g.pos);
+								return;
+							}
+							g.name_typ = gt;
+							g.scope.update_var_type(g.name, gt);
+							self.inside_guard_expr = old_ige;
+						} else {
+							if (!i.is_comptime) {
+								let ct = self.check_expr(&b.cond);
+								if (ct.neq(self.table.bool_t)) {
+									self.error(
+										"non-bool expression used as condition",
+										b.cond.pos()
+									);
+								}
+							}
+						}
+					}
+					self.check_stmt(&b.stmt);
+					if (self.scope_returns) {
+						self.scope_returns = false;
+					}
+				}
+			}
+			ast::Block => {
+				if (self.scope_returns) {
+					self.scope_returns = false;
+				}
+				let b = stmt as &ast::Block;
+				let oiu = self.inside_unsafe;
+				if (b.is_unsafe) {
+					self.inside_unsafe = b.is_unsafe;
+				}
+				self.check_stmts(b.stmts);
+				if (b.is_unsafe) {
+					self.inside_unsafe = oiu;
+				}
+			}
+			ast::DeferStmt => {
+				self.inside_defer = true;
+				let mut d = stmt as &ast::DeferStmt;
+				if (self.inside_test) {
+					push!(self.ctest.defer_stmts, d);
+				} else {
+					push!(self.func.defer_stmts, d);
+				}
+				self.check_stmt(&d.stmt);
+				self.inside_defer = false;
+			}
+			ast::ReturnStmt => {
+				let mut r = stmt as &ast::ReturnStmt;
+				if (self.inside_noreturn_func) {
+					self.error("@[noreturn] functions cannot use return statements", &r.pos);
+				}
+				let kind = self.func.info.kind();
+				let ret_t = if (self.func.ret_typ is ast::Result)
+					self.func.ret_typ.non_result() else self.func.ret_typ;
+				if (r.has_expr) {
+					if (ret_t.eq(ast::VOID_T)) {
+						self.error("unexpected non-void return value in void " + kind, &r.pos);
+					} else {
+						let oet = self.expected_type;
+						self.expected_type = self.func.ret_typ.non_result();
+						let expr_t = self.check_expr(&r.expr);
+						try self.check_compatible_types(expr_t, ret_t) catch {
+							self.error(err.msg, &r.pos);
+							self.note(fmt!("in return of {} `{}`", kind, self.func.name));
+						};
+						self.expected_type = oet;
+						if (r.expr is ast::UnaryExpr) {
+							let e = r.expr as &ast::UnaryExpr;
+							if (e.op == .Amp and self.is_local_value(&e.right)) {
+								self.error("cannot return the address of a local value", &e.pos);
+							}
+						} elif (r.expr is ast::Ident and self.type_is_pointer(self.func.ret_typ)) {
+							if (self.is_local_value(&r.expr)) {
+								self.error(
+									"cannot return the address of a local value", r.expr.pos()
+								);
+							}
+						}
+					}
+				} elif (ret_t.neq(ast::VOID_T)) {
+					self.error("simple `return` in a function whose return type is not void", &r.pos);
+					self.note(fmt!("expected value of type `{}`", ret_t));
+				}
+				self.mark_vars_as_unmoved(r.scope);
+				self.scope_returns = true;
+			}
+			ast::RaiseStmt => {
+				let mut r = stmt as &ast::RaiseStmt;
+				if (self.func.ret_typ !is ast::Result) {
+						let kind = self.func.info.kind();
+						self.error(
+							fmt!("current {} does not returns a result type", kind),
+							&r.pos
+						);
+				}
+				let msg_t = self.check_expr(&r.msg);
+				if (msg_t.neq(self.table.str_t)) {
+					self.error(fmt!("expected type `str`, found `{}`", msg_t), r.msg.pos());
+				}
+				if (r.code !is ast::EmptyExpr) {
+					let code_t = self.check_expr(&r.code);
+					if (!code_t.is_int()) {
+						self.error("expected numeric value", r.code.pos());
+					}
+				}
+				self.mark_vars_as_unmoved(r.scope);
+				self.scope_returns = true;
+			}
+			ast::BranchStmt => {
+				self.scope_returns = true;
+			}
+			ast::GotoStmt => {
+				let g = stmt as &ast::GotoStmt;
+				if (!self.inside_unsafe) {
+					self.error("`goto` requires `unsafe` block", &g.pos);
+					self.note("arbitrary `goto`s in code can cause undefined behavior");
+				}
+			}
+			ast::LabelStmt => {}
+			ast::ExprStmt => {
+				let mut expr = &(stmt as &ast::ExprStmt).expr;
+				_ = self.check_expr(expr);
+				if (!(expr is ast::TryExpr and !(expr as &ast::TryExpr).has_orelse)
+					and !(expr is ast::UnaryExpr and (expr as &ast::UnaryExpr).op in vec[tokens::Kind]{
+						.Inc, .Dec
+					})
+					and !(expr is ast::CallExpr and (expr as &ast::CallExpr).typ.eq(ast::VOID_T))
+					and !(expr is ast::BuiltinCallExpr
+					and (expr as &ast::BuiltinCallExpr).typ.eq(ast::VOID_T))
+					and expr !is ast::PostfixExpr) {
+					self.warn("expression evaluated but not used", expr.pos());
+				}
+			}
+			else => {}
+		}
+	}
+
+	fn check_assign_left(
+		mut &self, mut obj: &ast::Expr, mut right: &ast::Expr, mut lc: &i32, mut rc: &i32,
+		stmt: &ast::AssignStmt
+	) {
+		switch (obj) is {
+			ast::Ident => {
+				let mut id = obj as &ast::Ident;
+				if (id.name == "_") {
+					if (self.check_expr(right).eq(ast::VOID_T)) {
+						self.error("invalid use of void expression", right.pos());
+					}
+				} elif (let o_ident = id.scope.?.lookup(id.name)) {
+					if (o_ident is ast::Var) {
+						let mut lt = ast::VOID_T;
+						let mut obj_i = o_ident as &ast::Var;
+						let mut check_expr = false;
+						if (id.typ.neq(ast::VOID_T)) {
+							lt = id.typ;
+							check_expr = true;
+						} elif (obj_i.typ.neq(ast::VOID_T)) {
+							lt = obj_i.typ;
+							check_expr = true;
+						}
+						self.expected_type = lt;
+
+						let right_pos = right.pos();
+						let rt = self.check_expr(right);
+						if (rt.eq(ast::VOID_T)) {
+							self.error("invalid use of void expression", right_pos);
+							return;
+						} elif (lt.eq(ast::VOID_T)) {
+							lt = rt;
+						}
+
+						lt = self.untyped_to_real_type(lt);
+						self.mark_value_as_moved(right);
+						let is_null_literal = right.is_null_value();
+						obj_i.is_local = self.is_local_value(right);
+						obj_i.lifetime = ast::LifeTime{
+							start: id.scope.?.start_pos,
+							end: id.scope.?.end_pos,
+							pos: id.pos
+						};
+						if (stmt.is_decl) {
+							self.check_valid_snake_case(id.name, "variable", &id.pos);
+							if (is_null_literal and
+								!(obj_i.typ is ast::Optional or obj_i.typ.is_pointer())) {
+								self.error(
+									fmt!(
+										"cannot assign `null` to a non-optional variable `{}`",
+										id.name
+									),
+									right_pos
+								);
+								return;
+							} elif (check_expr) {
+								try self.check_compatible_types(rt, lt) catch {
+									self.error(
+										fmt!("cannot assign to `{}`: {}", id.name, err.msg),
+										right_pos
+									);
+								};
+							}
+							obj_i.typ = lt;
+							obj_i.is_null = is_null_literal;
+							id.typ = lt;
+						} else {
+							obj_i.lifetime = right.lifetime();
+							if (!obj_i.is_mut) {
+								self.error(
+									fmt!(
+										"cannot assign twice to immutable variable `{}`",
+										id.name
+									),
+									&id.pos
+								);
+								self.note(
+									fmt!(
+										"declare it with `mut` to make it mutable: `mut {}`",
+										id.name
+									)
+								);
+							} else {
+								try self.check_compatible_types(rt, obj_i.typ) catch {
+									self.error(
+										fmt!("cannot assign to `{}`: {}", id.name, err.msg),
+										right_pos
+									);
+								};
+								obj_i.is_changed = true;
+								if (obj_i.is_dropped) {
+									obj_i.is_dropped = false; // new value
+								}
+								obj_i.is_null = is_null_literal;
+							}
+							id.typ = obj_i.typ;
+						}
+					} else {
+						self.error("cannot assign to a label", &id.pos);
+					}
+				}
+			}
+			ast::SelectorExpr => {
+				let obj_t = self.check_expr(obj);
+				self.check_var_mutable(obj);
+				let oet = self.expected_type;
+				self.expected_type = obj_t;
+				try self.check_compatible_types(self.check_expr(right), obj_t) catch {
+					self.error(err.msg, right.pos());
+				};
+				self.mark_value_as_moved(right);
+				self.expected_type = oet;
+			}
+			ast::IndirectExpr => {
+				let obj_t = self.check_expr(obj);
+				self.check_var_mutable(obj);
+				let oet = self.expected_type;
+				self.expected_type = obj_t;
+				try self.check_compatible_types(self.check_expr(right), obj_t) catch {
+					self.error(err.msg, right.pos());
+				};
+				self.mark_value_as_moved(right);
+				self.expected_type = oet;
+				let i = obj as &ast::IndirectExpr;
+				if (i.expr is ast::CallExpr or i.expr is ast::BuiltinCallExpr) {
+					self.error(
+						"cannot dereference a function call on the left side of an assignment",
+						&i.pos
+					);
+					self.help("use a variable instead");
+				}
+			}
+			ast::IndexExpr => {
+				let obj_t = self.check_expr(obj);
+				self.check_var_mutable(obj);
+				let oet = self.expected_type;
+				self.expected_type = obj_t;
+				if ((obj as &ast::IndexExpr).index is ast::RangeExpr) {
+					self.error(
+						"cannot use range expression on the left side of an assignment",
+						obj.pos()
+					);
+					return;
+				}
+				try self.check_compatible_types(self.check_expr(right), obj_t) catch {
+					self.error(err.msg, right.pos());
+				};
+				self.mark_value_as_moved(right);
+				self.expected_type = oet;
+				// check immutable strings
+				if ((obj as &ast::IndexExpr).left_typ.eq(self.table.str_t)) {
+					self.error(
+						fmt!("cannot assign to `{}` because strings are immutable", obj), obj.pos()
+					);
+					self.note(
+						"that variables may be mutable but string values are always immutable"
+					);
+				}
+			}
+			ast::TupleLiteral => {
+				let mut t = obj as &ast::TupleLiteral;
+				lc.*--;
+				lc.* += t.exprs.len;
+				if (right is ast::TupleLiteral) {
+					let mut tl = right as &ast::TupleLiteral;
+					rc.*--;
+					rc.* += tl.exprs.len;
+					if (tl.exprs.len == t.exprs.len) {
+						for (idx in 0..t.exprs.len) {
+							self.check_assign_left(&t.exprs[idx], &tl.exprs[idx], lc, rc, stmt);
+						}
+					}
+				} else {
+					let ts = self.check_expr(right).ts();
+					if (ts.kind == .Tuple) {
+						let fields = (ts.info as &ast::TupleInfo).fields;
+						rc.*--;
+						rc.* += fields.len;
+						if (fields.len == t.exprs.len) {
+							for (i, mut &l in t.exprs) {
+								let rpos = right.pos();
+								let mut sf = ast::SelectorExpr{
+									left: right.*,
+									field_name: "s" + (i + 1).to_str(),
+									field_pos: rpos.*,
+									pos: rpos.*
+								} as ast::Expr;
+								self.check_assign_left(l, &sf, lc, rc, stmt);
+								push!(t.tmp_exprs, sf);
+							}
+						}
+					} else {
+						self.error(fmt!("expected tuple value, found {}", ts.kind), right.pos());
+					}
+				}
+			}
+			else => {
+				self.error("invalid expression on the left side of assignment", obj.pos());
+			}
+		}
+		self.expected_type = ast::VOID_T;
+		if (obj !is ast::TupleLiteral) {
+			let ltyp = obj.typ();
+			let rtyp = right.typ();
+			if (ltyp.is_pointer()) {
+				if ((rtyp.is_pointer() and stmt.op !in vec[Kind]{.Assign, .MinusAssign})
+					or (!rtyp.is_pointer() and rtyp.neq(self.table.null_t)
+						and stmt.op !in vec[Kind]{.PlusAssign, .MinusAssign})) {
+					self.error(
+						fmt!("invalid operator `{}` to `{}` and `{}`", stmt.op, ltyp, rtyp),
+						&stmt.pos
+					);
+				} elif (stmt.op != .Assign and !self.inside_unsafe) {
+					self.error(
+						"pointer arithmetic is only allowed inside `unsafe` block", &stmt.pos
+					);
+				}
+			} elif (ltyp is ast::Reference and stmt.op != .Assign) {
+				self.error("cannot use arithmetic with references", &stmt.pos);
+			}
+		}
+	}
+
+	fn check_assign_stmt(mut &self, stmt: &ast::AssignStmt) {
+		let mut lc, mut rc = stmt.left.len, stmt.right.len;
+		for (i, mut &obj in stmt.left) {
+			if (i < stmt.right.len) {
+				let mut right = &stmt.right[i];
+				self.check_assign_left(obj, right, &lc, &rc, stmt);
+			}
+		}
+		if (lc != rc) {
+			let vars = if (lc == 1) "variable" else "variables";
+			let vals = if (rc == 1) "value" else "values";
+			self.error(
+				fmt!("assignment mismatch: {} {} with {} {}", lc, vars, rc, vals),
+				&stmt.pos
+			);
+		}
+	}
+
+	fn check_switch_stmt(mut &self, mut s: &ast::SwitchStmt) {
+		let mut branch_exprs = map<str, i32>::new();
+		let ct = self.check_expr(&s.cond);
+		let ts = ct.ts();
+		if (s.is_typeswitch and ts.kind !in vec[TypeKind]{.SumType, .Struct}) {
+			self.error(fmt!("cannot use `{}` in typeswitch", ts.name), s.cond.pos());
+			self.note("expected sumtype value");
+			return;
+		}
+		for (mut &b in s.branches) {
+			if (!b.is_else) {
+				let oet = self.expected_type;
+				self.expected_type = ct;
+				for (mut &e in b.exprs) {
+					let mut key = "";
+					let et = self.check_expr(e);
+					try self.check_compatible_types(et, ct) catch {
+						self.error(err.msg, e.pos());
+					};
+					switch (e) is {
+						ast::TypeNode => {
+							key = (e as &ast::TypeNode).typ.to_str();
+						}
+						ast::DotEnumExpr => {
+							key = (e as &ast::DotEnumExpr).field;
+						}
+						else => {
+							key = e.to_str();
+						}
+					}
+					let val = if (key in branch_exprs) branch_exprs[key] else 0;
+					if (val == 1) {
+						self.error(
+							fmt!("switch case `{}` is handled more than once", key), &b.pos
+						);
+					}
+					branch_exprs[key] = val + 1;
+				}
+				self.expected_type = oet;
+				if (b.has_cond) {
+					if (self.check_expr(&b.cond).neq(self.table.bool_t)) {
+						self.error("non-boolean expression used as condition", b.cond.pos());
+					}
+				}
+			}
+			self.check_stmt(&b.stmt);
+			if (self.scope_returns) {
+				self.scope_returns = false;
+			}
+		}
+
+		// check that expressions are exhaustive, this is achieved either by putting
+		// an else or, when the switch is on a sum type or an enum by listing all
+		// variants or values
+		let mut is_exhaustive = true;
+		let mut unhandled = vec[str]::new();
+		if (ct.eq(self.table.bool_t)) {
+			for (v in [str; 2]{"true", "false"}) {
+				if (v !in branch_exprs) {
+					is_exhaustive = false;
+					push!(unhandled, fmt!("`{}`", v));
+				}
+			}
+		} else {
+			switch (ts.info) is {
+				ast::SumTypeInfo => {
+					for (v in (ts.info as &ast::SumTypeInfo).typs) {
+						let vstr = v.to_str();
+						if (vstr !in branch_exprs) {
+							is_exhaustive = false;
+							push!(unhandled, fmt!("`{}`", vstr));
+						}
+					}
+				}
+				ast::EnumInfo => {
+					for (&f in (ts.info as &ast::EnumInfo).fields) {
+						if (f.name !in branch_exprs) {
+							is_exhaustive = false;
+							push!(unhandled, fmt!("`.{}`", f.name));
+						}
+					}
+				}
+				else => is_exhaustive = false;
+			}
+		}
+		let mut else_branch = &s.branches[s.branches.len - 1];
+		let mut has_else = else_branch.is_else;
+		if (!has_else) {
+			for (i, &b in s.branches) {
+				if (b.is_else and i != s.branches.len - 1) {
+					self.error("`else` must be the last branch of `switch`", &b.pos);
+					else_branch = b;
+					has_else = true;
+				}
+			}
+		}
+		if (is_exhaustive) {
+			if (has_else) {
+				self.error("switch is exhaustive, `else` is unnecessary", &else_branch.pos);
+			}
+			return;
+		}
+		if (has_else) {
+			return;
+		}
+		self.error("switch must be exhaustive", &s.pos);
+		if (unhandled.len > 0) {
+			let mut err_details = "add switch branches for: ";
+			if (unhandled.len < SWITCH_EXHAUSTIVE_CUTOFF_LIMIT) {
+				err_details += unhandled.join(", ");
+			} else {
+				let remaining = unhandled.len - SWITCH_EXHAUSTIVE_CUTOFF_LIMIT;
+				err_details += unhandled[0..SWITCH_EXHAUSTIVE_CUTOFF_LIMIT].join(", ");
+				if (remaining > 0) {
+					err_details += fmt!(", and {} others...", remaining);
+				}
+			}
+			self.help(err_details);
+		} else {
+			self.help("add `else` branch at the end");
+		}
+	}
+}

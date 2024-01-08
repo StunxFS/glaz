@@ -1,0 +1,502 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+use src::tokens::{ Kind, Position };
+
+impl Parser {
+	@[inline]
+    fn empty_stmt(&self) ast::Stmt {
+        return ast::EmptyStmt{pos: self.tok.pos};
+    }
+
+    fn parse_stmts(mut &self) vec[ast::Stmt] {
+        let mut stmts = vec[ast::Stmt]::new();
+        while (self.tok.kind !in vec[Kind]{.Rbrace, .EOF}) {
+            push!(stmts, self.parse_stmt());
+        }
+        return stmts;
+    }
+
+    fn parse_stmt(mut &self, check_semicolon: bool = true) ast::Stmt {
+        switch (self.tok.kind) {
+            .KeyLoop => {
+                let oil = self.inside_loop;
+                self.inside_loop = true;
+                let pos = self.tok.pos;
+                self.next();
+                self.open_scope();
+                let stmt = self.parse_stmt();
+                self.close_scope();
+                self.inside_loop = oil;
+                return ast::LoopStmt{stmt: stmt, pos: pos};
+            }
+            .KeyWhile => {
+                let oil = self.inside_loop;
+                self.inside_loop = true;
+                let pos = self.tok.pos;
+                self.next();
+                self.check(.Lparen);
+                let cond = self.parse_expr();
+                self.check(.Rparen);
+                self.open_scope();
+                let stmt = self.parse_stmt();
+                self.close_scope();
+                self.inside_loop = oil;
+                return ast::WhileStmt{cond: cond, stmt: stmt, pos: pos};
+            }
+            .KeyDo => {
+                let oil = self.inside_loop;
+                self.inside_loop = true;
+                let pos = self.tok.pos;
+                self.next();
+                self.open_scope();
+                let stmt = self.parse_stmt();
+                self.close_scope();
+                self.check(.KeyWhile);
+                self.check(.Lparen);
+                let cond = self.parse_expr();
+                self.check(.Rparen);
+                self.check(.Semicolon);
+                self.inside_loop = oil;
+                return ast::DoWhileStmt{
+                    cond: cond,
+                    stmt: stmt,
+                    pos: pos
+                };
+            }
+            .KeyFor => {
+                let oil = self.inside_loop;
+                self.inside_loop = true;
+                let pos = self.tok.pos;
+                self.next();
+                self.open_scope();
+                self.check(.Lparen);
+
+                let mut kpos = self.tok.pos;
+                let is_mut = self.accept(.KeyMut);
+                let is_ref = self.accept(.Amp);
+                kpos = kpos.extend(&self.tok.pos);
+                let key = self.parse_name();
+                try self.scope.?.add(ast::Var{
+                    name: key,
+                    is_mut: is_mut,
+                    pos: kpos
+                }) catch self.error(err.msg, &kpos);
+
+                let mut value = "";
+                let mut vpos = Position{};
+                let mut has_value = false;
+                let mut value_is_mut = false;
+                let mut value_is_ref = false;
+                if (self.accept(.Comma)) {
+                    vpos = self.tok.pos;
+                    value_is_mut = self.accept(.KeyMut);
+                    value_is_ref = self.accept(.Amp);
+                    vpos = vpos.extend(&self.tok.pos);
+                    value = self.parse_name();
+                    has_value = true;
+                    try self.scope.?.add(ast::Var{
+                        name: value,
+                        is_mut: value_is_mut,
+                        pos: vpos
+                    }) catch self.error(err.msg, &vpos);
+                }
+
+                self.check(.KeyIn);
+                let expr = self.parse_expr();
+                self.check(.Rparen);
+                let stmt = self.parse_stmt();
+                let sc = self.scope.?;
+                self.close_scope();
+                self.inside_loop = oil;
+                return ast::ForInStmt{
+                    key: key,
+                    key_pos: kpos,
+                    key_is_mut: is_mut,
+                    key_is_ref: is_ref,
+                    value: value,
+                    has_value: has_value,
+                    value_is_ref: value_is_mut,
+                    value_is_ref: value_is_ref,
+                    value_pos: vpos,
+                    expr: expr,
+                    stmt: stmt,
+                    scope: sc,
+                    pos: pos
+                };
+            }
+            .KeySwitch => {
+                let pos = self.tok.pos;
+                self.next();
+                let mut cond: ast::Expr = ast::BoolLiteral{lit: true};
+                let mut branches = vec[ast::SwitchBranch]::new();
+                let mut is_typeswitch = false;
+                if (self.accept(.Lparen)) {
+                    cond = self.parse_expr();
+                    self.check(.Rparen);
+                    is_typeswitch = self.accept(.KeyIs);
+                }
+                self.check(.Lbrace);
+                while (self.tok.kind != .Rbrace) {
+                    let mut exprs = vec[ast::Expr]::new();
+                    let mut is_else = false;
+                    let mut if_cond = self.empty_expr();
+                    let mut has_cond = false;
+                    let spos = self.tok.pos;
+                    if (self.accept(.KeyElse)) {
+                        is_else = true;
+                        self.check(.Arrow);
+                    } else {
+                        do {
+                            if (is_typeswitch) {
+                                push!(exprs, ast::TypeNode{
+                                    typ: self.parse_type(),
+                                    pos: spos
+                                });
+                            } else {
+                                push!(exprs, self.parse_expr());
+                            }
+                        } while (self.accept(.Comma));
+                        if (self.accept(.KeyIf)) {
+                            self.check(.Lparen);
+                            if_cond = self.parse_expr();
+                            has_cond = true;
+                            self.check(.Rparen);
+                        }
+                        self.check(.Arrow);
+                    }
+                    self.open_scope();
+                    push!(branches, ast::SwitchBranch{
+                        exprs: exprs,
+                        stmt: self.parse_stmt(),
+                        is_else: is_else,
+                        cond: if_cond,
+                        has_cond: has_cond,
+                        pos: spos
+                    });
+                    if (is_else and branches.len == 1) {
+                        self.error("`switch` must have at least one non `else` branch", &spos);
+                    }
+                    self.close_scope();
+                }
+                self.check(.Rbrace);
+                if (branches.len == 0) {
+                    self.error("`switch` cannot be empty", &pos);
+                }
+                return ast::SwitchStmt{
+                    cond: cond,
+                    is_typeswitch: is_typeswitch,
+                    branches: branches,
+                    pos: pos
+                };
+            }
+            .Dollar, .KeyIf => {
+                let pos = self.tok.pos;
+                let is_comptime = self.accept(.Dollar);
+                let mut ifbranches = vec[ast::IfBranch]::new();
+                while (self.tok.kind in vec[Kind]{.KeyIf, .KeyElif, .KeyElse}) {
+                    if (self.tok.kind == .KeyElse) {
+                        self.next();
+                        self.open_scope();
+                        let stmt = self.parse_stmt();
+                        self.close_scope();
+                        push!(ifbranches, ast::IfBranch{
+                            stmt: stmt,
+                            is_else: true
+                        });
+                        break;
+                    } else {
+                        let op = self.tok.kind;
+                        self.next();
+                        self.check(.Lparen);
+                        self.open_scope();
+                        let mut cond = self.empty_expr();
+                        if (!is_comptime and self.tok.kind == .KeyLet) { // GuardExpr
+                            let mut gpos = self.tok.pos;
+                            self.next();
+                            let is_mut = self.accept(.KeyMut);
+                            let name = self.parse_name();
+                            self.check(.Assign);
+                            let expr = self.parse_expr();
+                            try self.scope.?.add(ast::Var{
+                                name: name,
+                                is_mut: is_mut,
+                                pos: gpos
+                            }) catch self.error(err.msg, &gpos);
+                            gpos = gpos.extend(expr.pos());
+                            cond = ast::GuardExpr{
+                                name: name,
+                                is_mut: is_mut,
+                                expr: expr,
+                                scope: self.scope.?,
+                                pos: gpos
+                            };
+                        } else {
+                            cond = self.parse_expr();
+                        }
+                        self.check(.Rparen);
+                        let stmt = self.parse_stmt();
+                        self.close_scope();
+                        push!(ifbranches, ast::IfBranch{
+                            kind: op,
+                            cond: cond,
+                            stmt: stmt
+                        });
+                        if (self.tok.kind !in vec[Kind]{.Dollar, .KeyElif, .KeyElse}) {
+                            break;
+                        }
+                        if (is_comptime) {
+                            self.check(.Dollar);
+                        }
+                    }
+                }
+                return ast::IfStmt{
+                    is_comptime: is_comptime,
+                    branches: ifbranches,
+                    pos: pos
+                };
+            }
+            .KeyDefer => {
+                if (self.inside_defer) {
+                    self.error("`defer` blocks cannot be nested");
+                }
+                self.inside_defer = true;
+                let pos = self.tok.pos;
+                self.next();
+                let stmt = self.parse_stmt();
+                self.inside_defer = false;
+                return ast::DeferStmt{stmt: stmt, pos: pos};
+            }
+            .Lbrace, .KeyUnsafe => {
+                let pos = self.tok.pos;
+                let is_unsafe = self.accept(.KeyUnsafe);
+                if (is_unsafe) {
+                    if (self.inside_unsafe) {
+                        self.error("already inside `unsafe` block", &pos);
+                    } else {
+                        self.inside_unsafe = true;
+                    }
+                }
+                self.check(.Lbrace);
+                self.open_scope();
+                let sc = self.scope.?;
+                let stmts = self.parse_stmts();
+                self.close_scope();
+                self.check(.Rbrace);
+                self.inside_unsafe = false;
+                return ast::Block{
+                    is_unsafe: is_unsafe,
+                    stmts: stmts.clone(),
+                    scope: sc,
+                    pos: pos
+                };
+            }
+            .KeyReturn => {
+                if (self.inside_defer) {
+                    self.error("cannot use `return` inside `defer` block");
+                }
+                let sc = self.scope.?;
+                let mut pos = self.tok.pos;
+                self.check(.KeyReturn);
+                let mut expr = self.empty_expr();
+                let mut has_expr = false;
+                if (self.tok.kind != .Semicolon) {
+                    if (self.inside_test) {
+                        self.error("cannot return values inside `test` block");
+                    }
+                    expr = self.parse_expr();
+                    pos = pos.extend(expr.pos());
+                    has_expr = true;
+                }
+                self.check(.Semicolon);
+                return ast::ReturnStmt{
+                    expr: expr,
+                    has_expr: has_expr,
+                    scope: sc,
+                    pos: pos
+                };
+            }
+            .KeyRaise => {
+                if (self.inside_test) {
+                    self.error("cannot use `raise` inside `test` block");
+                } elif (self.inside_defer) {
+                    self.error("cannot use `raise` inside `defer` block");
+                }
+                let sc = self.scope.?;
+                let pos = self.tok.pos;
+                self.next();
+                let msg = self.parse_expr();
+                let mut code = self.empty_expr();
+                if (self.accept(.Comma)) {
+                    code = self.parse_expr();
+                }
+                self.check(.Semicolon);
+                return ast::RaiseStmt{
+                    msg: msg,
+                    code: code,
+                    scope: sc,
+                    pos: pos
+                };
+            }
+            .KeyContinue, .KeyBreak => {
+                if (!self.inside_loop) {
+                    self.error(fmt!("`{}` can only be used inside loops", self.tok.kind));
+                }
+                let kind = self.tok.kind;
+                let pos = self.tok.pos;
+                self.check(kind);
+                self.check(.Semicolon);
+                return ast::BranchStmt{
+                    kind: kind,
+                    pos: pos
+                };
+            }
+            .KeyGoto => {
+                let mut pos = self.tok.pos;
+                self.next();
+                let label_pos = self.tok.pos;
+                pos = label_pos.extend(&label_pos);
+                let label = self.parse_name();
+                self.check(.Semicolon);
+                if (self.inside_test) {
+                    self.error("cannot use `goto` inside `test` blocks", &pos);
+                }
+                return ast::GotoStmt{
+                    label: label,
+                    label_pos: label_pos,
+                    pos: pos
+                };
+            }
+            .Name if (self.peek_tok.kind == .Colon) => { // labels
+                let mut pos = self.tok.pos;
+                let label = self.parse_name();
+                pos = pos.extend(&self.tok.pos);
+                self.check(.Colon);
+                if (self.inside_test) {
+                    self.error("cannot define labels inside `test` blocks", &pos);
+                } else {
+                    try self.fnscope.?.add(ast::Label{
+                        name: label,
+                        pos: pos
+                    }) catch {
+                        self.error(err.msg, &pos);
+                    };
+                }
+                return ast::LabelStmt{
+                    label: label,
+                    pos: pos
+                };
+            }
+            .KeyLet => {
+                return self.parse_assign_stmt();
+            }
+            else => {
+                let mut pos = self.tok.pos;
+                let mut left = vec[ast::Expr]::new();
+                do {
+                    push!(left, self.parse_expr());
+                } while (self.accept(.Comma));
+                let op = self.tok.kind;
+                if (!op.is_assign()) {
+                    if (left.len > 1) {
+                        self.error("multiple expressions are not allowed", left[1].pos());
+                        self.help("if you intend to use a tuple, please add parentheses: `(a, b)`");
+                    }
+                    let left0 = left[0];
+                    if (check_semicolon) {
+                        self.check(.Semicolon);
+                    }
+                    return ast::ExprStmt{
+                        expr: left0,
+                        pos: left0.pos().*
+                    };
+                }
+                self.check(op);
+                let mut right = vec[ast::Expr]::new();
+                do {
+                    push!(right, self.parse_expr());
+                } while(self.accept(.Comma));
+                pos = pos.extend(&self.tok.pos);
+                self.check(.Semicolon);
+                return ast::AssignStmt{
+                    left: left,
+                    right: right,
+                    op: op,
+                    pos: pos
+                };
+            }
+        }
+    }
+
+    fn parse_assign_name(mut &self) ast::Ident {
+        let is_mut = self.accept(.KeyMut);
+        let npos = self.tok.pos;
+        let name = self.parse_name();
+
+        let mut typ = ast::VOID_T;
+        if (self.accept(.Colon)) {
+            typ = self.parse_type();
+        }
+
+        try self.scope.?.add(ast::Var{
+            name: name,
+            is_mut: is_mut,
+            pos: npos,
+            typ: typ
+        }) catch self.error(err.msg);
+
+        return ast::Ident{
+            name: name,
+            scope: self.scope,
+            pos: npos,
+            typ: typ
+        };
+    }
+
+    fn parse_assign_stmt(mut &self) ast::Stmt {
+        let mut pos = self.tok.pos;
+        self.next();
+        let mut left = vec[ast::Expr]::new();
+        do {
+            switch (self.tok.kind) {
+                .Lparen => {
+                    let mut tpos = self.tok.pos;
+                    self.next();
+                    let mut exprs = vec[ast::Expr]::new();
+                    do {
+                        push!(exprs, self.parse_assign_name());
+                    } while (self.accept(.Comma));
+                    tpos = tpos.extend(&self.tok.pos);
+                    self.check(.Rparen);
+                    push!(left, ast::TupleLiteral{
+                        exprs: exprs,
+                        pos: tpos
+                    });
+                }
+                else => push!(left, self.parse_assign_name());
+            }
+        } while (self.accept(.Comma));
+
+        let op = self.tok.kind;
+        let op_pos = self.tok.pos;
+
+        let mut right = vec[ast::Expr]::new();
+        if (!op.is_assign()) {
+            self.error("expected an assignment operator", &op_pos);
+        }
+        self.check(op);
+        do {
+            push!(right, self.parse_expr());
+        } while (self.accept(.Comma));
+        pos = pos.extend(&self.prev_tok.pos);
+        self.check(.Semicolon);
+        return ast::AssignStmt{
+            left: left,
+            right: right,
+            op: op,
+            pos: pos,
+            is_decl: true
+        };
+    }
+}

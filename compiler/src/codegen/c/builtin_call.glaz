@@ -1,0 +1,156 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::{fs, path};
+
+use src::ast;
+use src::utils;
+
+impl Gen {
+    fn gen_builtin_call(mut &self, expr: &ast::BuiltinCallExpr) {
+        switch (expr.name) {
+            "push" => {
+                let arg0 = expr.args[0];
+                let elem_typ = (arg0.typ().ts().info as &ast::VectorInfo).elem_typ;
+                self.write("std__Vec__push(");
+                self.ref(arg0);
+                self.write(fmt!(", (({}[]){ ", elem_typ.to_cstr()));
+                self.gen_expr_with_cast(expr.args[1], elem_typ);
+                self.write(" }))");
+            }
+            "pop" => {
+                let arg0 = expr.args[0];
+                let elem_typ = (arg0.typ().ts().info as &ast::VectorInfo).elem_typ;
+                self.write("*CAST(std__Vec__pop(");
+                self.ref(arg0);
+                self.write(fmt!("), {}*)", elem_typ.to_cstr()));
+            }
+            "extend" => {
+                self.write("std__Vec__extend(");
+                self.ref(expr.args[0]);
+                self.write(", ");
+                self.gen_expr(expr.args[1]);
+                self.write(")");
+            }
+            "assert" => {
+                if (!self.prefs.is_release) {
+                    let arg0 = expr.args[0];
+                    self.write("if (!(");
+                    self.gen_expr(arg0);
+                    self.writeln(")) /* ASSERT */ {");
+                    self.indent++;
+                    if (self.inside_test) {
+                        self.writeln(
+                            fmt!(
+                                "std__testing__print_test_fail(_SLIT(\"{}\"), _SLIT(\"{}\"));",
+                                utils::smart_quote(self.ctest.name),
+                                utils::smart_quote(
+                                    utils::formatted_report(
+                                        "error", "assertion failed", arg0.pos()
+                                    )
+                                )
+                            )
+                        );
+                        if (expr.args.len == 2) {
+                            // `assert` note
+                            let arg1 = expr.args[1];
+                            self.write("std__console__eprintln(_SLIT(\"");
+                            self.write(
+                                utils::smart_quote(
+                                    utils::small_report(
+                                        "note", cast(arg1, &ast::StringLiteral).lit
+                                    )
+                                )
+                            );
+                            self.writeln("\"));");
+                        }
+                        self.writeln("FAIL_TESTS++;");
+                        self.write_defer_stmts();
+                        self.autodrop(self.ctest.scope);
+                        self.writeln("return;");
+                    } else {
+                        if (expr.args.len == 1) {
+                            self.panic(
+                                fmt!("{}: assertion failed: `{}`", expr.pos, arg0.to_str())
+                            );
+                        } else {
+                            // `assert` note
+                            let arg1 = expr.args[1];
+                            self.panic(
+                                fmt!(
+                                    "{}: assertion failed: `{}`. NOTE: {}", expr.pos,
+                                    arg0.to_str(), cast(arg1, &ast::StringLiteral).lit
+                                )
+                            );
+                        }
+                    }
+                    self.indent--;
+                    self.write("}");
+                }
+            }
+            "fmt" => {
+                self.write("std__fmt(");
+                self.gen_expr(expr.args[0]);
+                self.write(fmt!(", ((std__Str[{}]){ ", expr.args.len - 1));
+                for (i, arg in expr.args) {
+                    if (i == 0) continue;
+                    let typ = arg.typ();
+                    if (typ is ast::Pointer) {
+                        self.write("pointer_to_str(");
+                        self.gen_expr(arg);
+                        self.write(")");
+                    } else {
+                        let ts = typ.ts();
+                        if (typ.eq(self.table.str_t)) {
+                            self.gen_expr(arg);
+                        } elif (let m_str = ts.find_method("to_str")) {
+                            self.write(fmt!("{}__to_str(", ts.gname));
+                            self.receiver(m_str.rec_typ, arg);
+                            self.write(")");
+                        }
+                    }
+                    if (i < expr.args.len - 1) {
+                        self.write(", ");
+                    }
+                }
+                self.write(" }))");
+            }
+            "sizeof" => {
+                let arg0 = expr.args[0] as &ast::TypeNode;
+                self.write(fmt!("sizeof({})", arg0.typ.to_cstr()));
+            }
+            "default" => {
+                let arg0 = expr.args[0] as &ast::TypeNode;
+                self.default_value(arg0.typ);
+            }
+            "box" => {
+                let arg0 = expr.args[0];
+                let styp = arg0.typ().to_cstr();
+                self.write("BOX_NEW((");
+                self.gen_expr(arg0);
+                self.write(fmt!("), {})", styp));
+            }
+            "include_str" => {
+                let arg0 = (expr.args[0] as &ast::StringLiteral).lit;
+                let path = path::join(path::dirname(self.sf.file), arg0);
+                self.write(
+                    fmt!("_SLIT(\"{}\")", utils::smart_quote(try fs::read_file(path) orelse ""))
+                );
+            }
+            "drop" => {
+                let obj = (expr.args[0] as &ast::Ident).obj as &ast::Var;
+                self.write(self.drop_value(obj.name, obj.typ));
+            }
+            "typeof" => {
+                self.write(fmt!("_SLIT(\"{}\")", expr.args[0].typ()));
+            }
+            "breakpoint" if (!self.prefs.is_release) => {
+                self.write("G_BREAKPOINT");
+            }
+            "unreachable" => {
+                self.panic("internal error: entered unreachable code");
+            }
+            else => {}
+        }
+    }
+}

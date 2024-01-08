@@ -1,0 +1,36 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::panic;
+
+pub enum OS {
+    Unknown,
+    Linux
+}
+
+@[inline]
+pub fn get_os_from_host() OS {
+    $if (_LINUX_) {
+        return .Linux;
+    } $else {
+        panic("unknown host OS");
+    }
+}
+
+pub fn get_os_from_string(os_name: str) !OS {
+    switch (os_name) {
+        "linux" => return .Linux;
+        else => raise fmt!("unknown OS name: `{}`", os_name);
+    }
+}
+
+impl OS {
+    pub fn equals_to_glaz_flag(self, flag: str) bool {
+        switch {
+            flag == "_LINUX_" and self == .Linux => {
+                return true;
+            }
+            else => return false;
+        }
+    }
+}

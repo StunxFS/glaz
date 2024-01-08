@@ -1,0 +1,356 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+use src::utils;
+
+pub enum Kind {
+	Unknown, // unknown
+	EOF, // end of file
+	Name, // name
+	Number, // number
+	Char, // character
+	String, // string
+	Plus, // +
+	Minus, // -
+	Mult, // *
+	Div, // /
+	Mod, // %
+	Inc, // ++
+	Dec, // --
+	Assign, // =
+	PlusAssign, // +=
+	MinusAssign, // -=
+	MultAssign, // *=
+	DivAssign, // /=
+	ModAssign, // %=
+	AmpAssign, // &=
+	PipeAssign, // |=
+	XorAssign, // ^=
+	Eq, // ==
+	Ne, // !=
+	Lt, // <
+	Gt, // >
+	Le, // <=
+	Ge, // >=
+	Lshift, // <<
+	Rshift, // >>
+	Dot, // .
+	DotDot, // ..
+	Ellipsis, // ...
+	Arrow, // =>
+	Comma, // ,
+	Colon, // :
+	DoubleColon, // ::
+	Semicolon, // ;
+	Question, // ?
+	Bang, // !
+	Amp, // &
+	Pipe, // |
+	BitNot, // ~
+	Xor, // ^
+	CHash, // C hash statement
+	At, // @
+	Hash, // #
+	Dollar, // $
+	Lbrace, // {
+	Rbrace, // }
+	Lbracket, // [
+	Rbracket, // ]
+	Lparen, // (
+	Rparen, // )
+
+	KeywordBegin,
+	// ========== literals ==========
+	KeyBase, // base
+	KeySelf, // self
+	KeyTrue, // true
+	KeyFalse, // false
+	KeyNull, // null
+	// ==============================
+
+	// ========== keywords ==========
+	KeyBox, // Box
+	KeyVec, // vec
+	KeyMap, // map
+	KeySelfType, // Self
+	KeySrc, // src
+	KeyMod, // mod
+	KeyExtern, // extern
+	KeyInterface, // interface
+	KeyStruct, // struct
+	KeyUnion, // union
+	KeyType, // type
+	KeyEnum, // enum
+	KeyImpl, // impl
+	KeyFn, // fn
+	KeyTest, // test
+	KeyPub, // pub
+	KeyAnd, // and
+	KeyOr, // or
+	KeyIf, // if
+	KeyElif, // elif
+	KeyElse, // else
+	KeySwitch, // switch
+	KeyFor, // for
+	KeyDo, // do
+	KeyWhile, // while
+	KeyLoop, // loop
+	KeyBreak, // break
+	KeyContinue, // continue
+	KeyReturn, // return
+	KeyRaise, // raise
+	KeyGoto, // goto
+	KeyIn, // in
+	KeyIs, // is
+	KeyNotIn, // !in
+	KeyNotIs, // !is
+	KeyCast, // cast
+	KeyAs, // as
+	KeyUse, // use
+	KeyConst, // const
+	KeyLet, // let
+	KeyMut, // mut
+	KeyDefer, // defer
+	KeyUnsafe, // unsafe
+	KeyTry, // try
+	KeyOrElse, // orelse
+	KeyCatch, // catch
+	// ==============================
+	KeywordEnd
+}
+
+const TOKENS_STRINGS: vec[(Kind, str)] = vec[(Kind, str)]{
+	(.Unknown, "unknown"),
+	(.EOF, "end of file"),
+	(.Name, "name"),
+	(.Number, "number"),
+	(.Char, "character"),
+	(.String, "string"),
+	(.Plus, "+"),
+	(.Minus, "-"),
+	(.Mult, "*"),
+	(.Div, "/"),
+	(.Mod, "%"),
+	(.Inc, "++"),
+	(.Dec, "--"),
+	(.Assign, "="),
+	(.PlusAssign, "+="),
+	(.MinusAssign, "-="),
+	(.MultAssign, "*="),
+	(.DivAssign, "/="),
+	(.ModAssign, "%="),
+	(.AmpAssign, "&="),
+	(.PipeAssign, "|="),
+	(.XorAssign, "^="),
+	(.Eq, "=="),
+	(.Ne, "!="),
+	(.Lt, "<"),
+	(.Gt, ">"),
+	(.Le, "<="),
+	(.Ge, ">="),
+	(.Lshift, "<<"),
+	(.Rshift, ">>"),
+	(.Dot, "."),
+	(.DotDot, ".."),
+	(.Ellipsis, "..."),
+	(.Arrow, "=>"),
+	(.Comma, ","),
+	(.Colon, ":"),
+	(.DoubleColon, "::"),
+	(.Semicolon, ";"),
+	(.Question, "?"),
+	(.Bang, "!"),
+	(.Amp, "&"),
+	(.Pipe, "|"),
+	(.BitNot, "~"),
+	(.Xor, "^"),
+	(.CHash, "hash statement"),
+	(.At, "@"),
+	(.Hash, "#"),
+	(.Dollar, "$"),
+	(.Lbrace, "{"),
+	(.Rbrace, "}"),
+	(.Lbracket, "["),
+	(.Rbracket, "]"),
+	(.Lparen, "("),
+	(.Rparen, ")"),
+
+	// ======= literals ===========
+	(.KeyBase, "base"),
+	(.KeySelf, "self"),
+	(.KeyTrue, "true"),
+	(.KeyFalse, "false"),
+	(.KeyNull, "null"),
+
+	// ======= keywords ===========
+	(.KeyBox, "Box"),
+	(.KeyVec, "vec"),
+	(.KeyMap, "map"),
+	(.KeySelfType, "Self"),
+	(.KeySelf, "Self"),
+	(.KeySrc, "src"),
+	(.KeyMod, "mod"),
+	(.KeyExtern, "extern"),
+	(.KeyInterface, "interface"),
+	(.KeyStruct, "struct"),
+	(.KeyUnion, "union"),
+	(.KeyType, "type"),
+	(.KeyEnum, "enum"),
+	(.KeyImpl, "impl"),
+	(.KeyFn, "fn"),
+	(.KeyTest, "test"),
+	(.KeyPub, "pub"),
+	(.KeyAnd, "and"),
+	(.KeyOr, "or"),
+	(.KeyIf, "if"),
+	(.KeyElif, "elif"),
+	(.KeyElse, "else"),
+	(.KeySwitch, "switch"),
+	(.KeyFor, "for"),
+	(.KeyDo, "do"),
+	(.KeyWhile, "while"),
+	(.KeyLoop, "loop"),
+	(.KeyBreak, "break"),
+	(.KeyContinue, "continue"),
+	(.KeyReturn, "return"),
+	(.KeyRaise, "raise"),
+	(.KeyGoto, "goto"),
+	(.KeyIn, "in"),
+	(.KeyIs, "is"),
+	(.KeyNotIn, "!in"),
+	(.KeyNotIs, "!is"),
+	(.KeyAs, "as"),
+	(.KeyCast, "cast"),
+	(.KeyUse, "use"),
+	(.KeyConst, "const"),
+	(.KeyLet, "let"),
+	(.KeyMut, "mut"),
+	(.KeyDefer, "defer"),
+	(.KeyUnsafe, "unsafe"),
+	(.KeyTry, "try"),
+	(.KeyOrElse, "orelse"),
+	(.KeyCatch, "catch")
+};
+
+impl Kind {
+	@[inline]
+	pub fn is_assign(self) bool {
+		return self in vec[Kind]{
+			.Assign, .PlusAssign, .MinusAssign, .MultAssign, .DivAssign,
+			.ModAssign, .AmpAssign, .PipeAssign, .XorAssign
+		};
+	}
+
+	@[inline]
+	pub fn is_relational(self) bool {
+		return self in vec[Kind]{
+			.Eq, .Ne, .Lt, .Gt, .Le, .Ge, .KeyIs, .KeyNotIs, .KeyIn, .KeyNotIn
+		};
+	}
+
+	pub fn to_str(self) str {
+		for (t in TOKENS_STRINGS) {
+			if (t.s1 == self) return t.s2;
+		}
+		return "<unknown>";
+	}
+}
+
+fn gen_keys() map<str, Kind> {
+	let mut res = map<str, Kind>::new();
+	for (i in (Kind::KeywordBegin as i32)..(Kind::KeywordEnd as i32)) {
+		let k = i as Kind;
+		res[k.to_str()] = k;
+	}
+	return res;
+}
+
+const KEYWORDS: map<str, Kind> = gen_keys();
+
+pub struct Position {
+	pub file: str,
+	pub line: i32,
+	pub col: i32,
+	pub pos: i32,
+	pub len: i32,
+
+	// multi-line support
+	pub line2: i32 = -1,
+	pub col2: i32
+}
+
+impl Position {
+	@[inline]
+	pub fn extend(self, end: &Position) Position {
+		if (self.file == end.file and end.line > self.line) {
+			return Position{
+				...self,
+				line2: end.line,
+				col2: end.col
+			};
+		}
+		return Position{
+			...self,
+			len: end.pos - self.pos + end.len
+		};
+	}
+
+	pub fn to_str(self) str {
+		let mut msg = fmt!("{}:{}:{}", self.file, self.line + 1, utils::max(1, self.col + 1));
+		if (self.line2 > -1) {
+			msg += fmt!("-{}:{}", self.line2 + 1, utils::max(1, self.col2 + 1));
+		}
+		return msg;
+	}
+}
+
+pub struct Token {
+	pub lit: str,
+	pub kind: Kind,
+	pub pos: Position
+}
+
+impl Token {
+	@[inline]
+	pub fn new(kind: Kind, pos: Position, lit: str = "") Token {
+		return Token{
+			lit: lit,
+			kind: kind,
+			pos: pos
+		};
+	}
+
+	pub fn lookup(lit: str) Kind {
+		for (k, v in KEYWORDS) {
+			if (k == lit) return v;
+		}
+		return .Name;
+	}
+
+	@[inline]
+	pub fn is_key(lit: str) bool {
+		return KEYWORDS[lit] as i32 > 0;
+	}
+
+	pub fn to_str(self) str {
+		let s = self.kind.to_str();
+		if (!s[0].is_letter()) {
+			return fmt!("token `{}`", s);
+		}
+
+		let mut sb = strings::Builder::new();
+		if (Token::is_key(self.lit)) {
+			sb.write_str("keyword");
+		} else {
+			sb.write_str(s);
+		}
+
+		if (self.lit != "") {
+			sb.write_str(fmt!(" `{}`", self.lit));
+		}
+
+		return sb.to_str();
+	}
+}

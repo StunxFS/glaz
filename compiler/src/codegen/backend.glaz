@@ -1,0 +1,32 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::{ast, pref};
+
+/// This is a list of backends supported by the compiler.
+pub enum TargetBackend {
+	C
+}
+
+pub fn backend_from_str(b: str) !TargetBackend {
+	switch (b) {
+		"c" => return .C;
+		else => raise fmt!("unknown backend `{}`", b);
+	}
+}
+
+/// A backend represents a code generator that uses the GIR
+/// generated from the AST.
+@[abstract]
+pub struct Backend {
+	table: &ast::Table,
+	prefs: &pref::Preferences
+}
+
+impl Backend {
+	@[abstract]
+	pub fn gen_files(mut &self, source_files: vec[Box<ast::SourceFile>]);
+
+	@[abstract]
+	pub fn get_output(mut &self) str;
+}

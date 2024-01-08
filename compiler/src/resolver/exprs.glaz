@@ -1,0 +1,176 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+
+impl Resolver {
+	fn resolve_expr(mut &self, mut expr: &ast::Expr) {
+		switch (expr) is {
+			ast::Ident => self.resolve_ident(expr as &ast::Ident);
+			ast::PathExpr => self.resolve_path(expr as &ast::PathExpr);
+			ast::CallExpr => {
+				let mut c = expr as &ast::CallExpr;
+				switch (c.left) is {
+					ast::SelectorExpr => {
+						let mut ss = c.left as &ast::SelectorExpr;
+						self.resolve_expr(&ss.left);
+					}
+					else => {
+						let old_efn = self.expecting_fn;
+						self.expecting_fn = true;
+						self.resolve_expr(&c.left);
+						self.expecting_fn = old_efn;
+					}
+				}
+				for (mut &arg in c.args) {
+					self.resolve_expr(&arg.expr);
+				}
+			}
+			ast::BuiltinCallExpr => {
+				let mut c = expr as &ast::BuiltinCallExpr;
+				for (mut &arg in c.args) {
+					self.resolve_expr(arg);
+				}
+			}
+			ast::ArrayDecompose => {
+				let mut ad = expr as &ast::ArrayDecompose;
+				self.resolve_expr(&ad.expr);
+			}
+			ast::NullCoalescing => {
+				let mut n = expr as &ast::NullCoalescing;
+				self.resolve_expr(&n.expr);
+				self.resolve_expr(&n.default_expr);
+			}
+			ast::NullCheckExpr => {
+				let mut n = expr as &ast::NullCheckExpr;
+				self.resolve_expr(&n.expr);
+			}
+			ast::IndirectExpr => {
+				let mut i = expr as &ast::IndirectExpr;
+				self.resolve_expr(&i.expr);
+			}
+			ast::UnsafeExpr => {
+				let mut u = expr as &ast::UnsafeExpr;
+				self.resolve_expr(&u.expr);
+			}
+			ast::CastExpr => {
+				let mut c = expr as &ast::CastExpr;
+				self.resolve_expr(&c.expr);
+				_ = self.resolve_type(&c.typ);
+			}
+			ast::TypeNode => {
+				_ = self.resolve_type(&(expr as &ast::TypeNode).typ);
+			}
+			ast::TupleLiteral => {
+				let mut t = expr as &ast::TupleLiteral;
+				for (mut &e in t.exprs) self.resolve_expr(e);
+			}
+			ast::StructLiteral => {
+				let mut s = expr as &ast::StructLiteral;
+				let old_et = self.expecting_type;
+				self.expecting_type = true;
+				self.resolve_expr(&s.name);
+				self.expecting_type = old_et;
+				if (s.has_base_init) {
+					self.resolve_expr(&s.base_init);
+				}
+				if (s.has_update_expr) {
+					self.resolve_expr(&s.update_expr);
+				}
+				for (mut &f in s.fields) {
+					self.resolve_expr(&f.expr);
+				}
+			}
+			ast::ArrayLiteral => {
+				let mut a = expr as &ast::ArrayLiteral;
+				_ = self.resolve_type(&a.elem_typ);
+				if (a.is_fixed) {
+					self.resolve_expr(&a.size);
+				}
+				for (mut &e in a.elems) {
+					self.resolve_expr(e);
+				}
+				if (a.has_len) {
+					self.resolve_expr(&a.len_expr);
+				}
+				if (a.has_cap) {
+					self.resolve_expr(&a.cap_expr);
+				}
+				if (a.has_init) {
+					self.resolve_expr(&a.init_expr);
+				}
+			}
+			ast::MapLiteral => {
+				let mut m = expr as &ast::MapLiteral;
+				_ = self.resolve_type(&m.elem_typ);
+				if (!m.has_new) for (mut &f in m.fields) {
+					self.resolve_expr(&f.key);
+					self.resolve_expr(&f.value);
+				}
+			}
+			ast::UnaryExpr => {
+				let mut u = expr as &ast::UnaryExpr;
+				self.resolve_expr(&u.right);
+			}
+			ast::BinaryExpr => {
+				let mut b = expr as &ast::BinaryExpr;
+				self.resolve_expr(&b.left);
+				self.resolve_expr(&b.right);
+			}
+			ast::TernaryExpr => {
+				let mut t = expr as &ast::TernaryExpr;
+				if (t.is_comptime) {
+					t.comptime_result = self.resolve_comptime_flag(&t.cond);
+					if (t.comptime_result) {
+						self.resolve_expr(&t.left);
+					} else {
+						self.resolve_expr(&t.right);
+					}
+				} else {
+					self.resolve_expr(&t.cond);
+					self.resolve_expr(&t.left);
+					self.resolve_expr(&t.right);
+				}
+			}
+			ast::PostfixExpr => {
+				let mut p = expr as &ast::PostfixExpr;
+				self.resolve_expr(&p.left);
+			}
+			ast::ParExpr => {
+				self.resolve_expr(&(expr as &ast::ParExpr).expr);
+			}
+			ast::IndexExpr => {
+				let mut i = expr as &ast::IndexExpr;
+				self.resolve_expr(&i.left);
+				self.resolve_expr(&i.index);
+			}
+			ast::RangeExpr => {
+				let mut r = expr as &ast::RangeExpr;
+				if (r.has_start) {
+					self.resolve_expr(&r.start);
+				}
+				if (r.has_end) {
+					self.resolve_expr(&r.end);
+				}
+			}
+			ast::SelectorExpr => {
+				let mut s = expr as &ast::SelectorExpr;
+				self.resolve_expr(&s.left);
+			}
+			ast::TryExpr => {
+				let mut t = expr as &ast::TryExpr;
+				self.resolve_expr(&t.expr);
+				if (t.has_orelse) {
+					self.resolve_expr(&t.orelse_val);
+				} elif (t.has_catch) {
+					self.resolve_stmt(&t.catcher);
+				}
+			}
+			ast::GuardExpr => {
+				let mut g = expr as &ast::GuardExpr;
+				self.resolve_expr(&g.expr);
+			}
+			else => {}
+		}
+	}
+}

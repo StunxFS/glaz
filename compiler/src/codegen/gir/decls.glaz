@@ -1,0 +1,109 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+
+pub type Decl = EmptyDecl | PreprocessorLine | Struct | Func = EmptyDecl{};
+
+pub struct EmptyDecl {}
+
+pub struct PreprocessorLine {
+	pub line: str
+}
+
+pub struct Struct {
+	name: str,
+	is_union: bool,
+	fields: vec[StructField]
+}
+
+pub struct StructField {
+	name: str,
+	typ: ast::Type
+}
+
+pub struct Arg {
+	name: str,
+	typ: ast::Type
+}
+
+pub struct Func {
+	pub name: str,
+	pub mut args: vec[Arg],
+	pub ret_typ: ast::Type,
+	pub is_noreturn: bool,
+	pub is_inline: bool,
+	pub mut stmts: vec[Stmt],
+	pub mut label_count: i32,
+	pub mut tmp_count: i32
+}
+
+/*
+impl Func {
+	@[inline]
+	pub fn add_arg(mut &self, arg: Arg) {
+		push!(self.args, arg);
+	}
+
+	@[inline]
+	pub fn add_stmt(mut &self, stmt: Stmt) {
+		push!(self.stmts, stmt);
+	}
+
+	@[inline]
+	pub fn label(mut &self) str {
+		return fmt!("_L{}_", ++self.label_count);
+	}
+
+    @[inline]
+    fn mktmp_name(mut &self) str {
+        return fmt!("_T{}_", ++self.tmp_count);
+    }
+
+    @[inline]
+    pub fn tmp(mut &self, typ: ast::Type) Expr {
+        return Ident{
+			name: self.mktmp_name(),
+			typ: typ
+        };
+    }
+
+	@[inline]
+	pub fn store(mut &self, typ: ast::Type, left: Expr, right: Expr) {
+		self.add_stmt(Store{
+			left: left,
+			op: .Assign,
+			right: right,
+			typ: typ
+		});
+	}
+
+	pub fn insert_label(mut &self, label: str) {
+		self.add_stmt(Label{name: label});
+	}
+
+	@[inline]
+	pub fn goto_(mut &self, label: str) {
+		self.add_stmt(Goto{label: label});
+	}
+
+	@[inline]
+	pub fn if_goto(mut &self, cond: Expr, l1: str, l2: str) {
+		self.add_stmt(IfGoto{
+			cond: cond,
+			label_true: l1,
+			label_false: l2
+		});
+	}
+
+	@[inline]
+	pub fn ret_void(mut &self) {
+		self.add_stmt(Return{expr: Ident{}});
+	}
+
+	@[inline]
+	pub fn ret(mut &self, expr: Expr) {
+		self.add_stmt(Return{ expr: expr, has_expr: true });
+	}
+}
+*/

@@ -1,0 +1,58 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::tokens;
+
+pub type Object = Var | Label = Label{};
+
+pub struct Var {
+	pub name: str,
+	pub is_arg: bool, // `x` in `fn abc(x: i32)`
+	pub is_mut: bool,
+	pub mut is_null: bool, // true when `obj = null`
+	pub mut is_used: bool,
+	pub mut is_local: bool,
+	pub mut is_changed: bool,
+	pub mut is_dropped: bool,
+	pub mut lifetime: LifeTime,
+	pub mut dangling_ptr_error: bool,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct Label {
+	pub name: str,
+	pub mut is_used: bool,
+	pub pos: tokens::Position
+}
+
+impl Object {
+	pub fn name(&self) str {
+		switch (self) is {
+			Var => return (self as &Var).name;
+			Label => return (self as &Label).name;
+		}
+		return "";
+	}
+
+	pub fn mark_as_used(mut &self) {
+		if (self is Var) {
+			(self as &Var).is_used = true;
+		}
+	}
+
+	pub fn pos(&self) tokens::Position {
+		switch (self) is {
+			Label => return (self as &Label).pos;
+			Var => return (self as &Var).pos;
+		}
+		return EMPTY_POSITION;
+	}
+
+	pub fn typ(&self) Type {
+		switch (self) is {
+			Var => return (self as &Var).typ;
+			else => return VOID_T;
+		}
+	}
+}

@@ -1,0 +1,462 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+use src::ast;
+use src::pref;
+use src::utils;
+
+pub const C_RESERVED_WORDS: vec[str] = vec[str]{
+    "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum",
+    "extern", "float", "for", "goto", "if", "inline", "int", "link", "long", "register",
+    "restrict", "return", "short", "signed", "sizeof", "static", "str", "struct", "switch",
+    "typedef", "union", "unix", "unsigned", "void", "volatile", "while", "true", "false"
+};
+
+pub struct Gen {
+    table: &ast::Table,
+	prefs: &pref::Preferences,
+
+	mut type_symbols: vec[&ast::TypeSymbol],
+	mut mods: str,
+	mut sf: &ast::SourceFile = &ast::SourceFile{},
+	mut func: &ast::FnDecl = &ast::FnDecl{},
+	mut ctest: &ast::TestDecl = &ast::TestDecl{},
+	mut self_type: ast::Type,
+
+	mut indent: i32,
+	mut empty_line: bool,
+	mut tmps: i32,
+	mut test_c: i32,
+	mut stmt_path_pos: vec[i32],
+	mut defer_stmts: vec[&ast::DeferStmt],
+	mut result_types: vec[str],
+
+	mut inside_ref: bool,
+	mut inside_test: bool,
+
+	mut chash_definitions: strings::Builder,
+	mut typedefs: strings::Builder,
+	mut typedefs2: strings::Builder,
+	mut type_definitions: strings::Builder,
+	mut result_definitions: strings::Builder,
+	mut const_decls: strings::Builder,
+	mut funcs_definitions: strings::Builder,
+	mut helpers_definitions: strings::Builder,
+	mut consts_inits: strings::Builder,
+	mut helpers: strings::Builder,
+	mut test_calls: strings::Builder,
+	mut out: strings::Builder
+}
+
+impl Gen {
+    @[inline]
+    pub fn new(table: &ast::Table, prefs: &pref::Preferences) Box<Gen> {
+        return box!(Gen{
+            table: table,
+            prefs: prefs,
+            chash_definitions: strings::Builder::new(500),
+            typedefs: strings::Builder::new(500),
+            typedefs2: strings::Builder::new(500),
+            type_definitions: strings::Builder::new(500),
+            result_definitions: strings::Builder::new(500),
+            const_decls: strings::Builder::new(500),
+            funcs_definitions: strings::Builder::new(500),
+            helpers_definitions: strings::Builder::new(500),
+            consts_inits: strings::Builder::new(500),
+            helpers: strings::Builder::new(500),
+            test_calls: strings::Builder::new(500),
+            out: strings::Builder::new(500)
+        });
+    }
+
+    @[unsafe]
+    pub fn drop(mut &self) {
+        unsafe {
+            self.chash_definitions.drop();
+            self.typedefs.drop();
+            self.typedefs2.drop();
+            self.type_definitions.drop();
+            self.result_definitions.drop();
+            self.const_decls.drop();
+            self.funcs_definitions.drop();
+            self.helpers_definitions.drop();
+            self.consts_inits.drop();
+            self.helpers.drop();
+            self.test_calls.drop();
+            self.out.drop();
+        }
+    }
+
+    pub fn gen_files(mut &self, source_files: vec[Box<ast::SourceFile>]) {
+        self.type_symbols = self.table.gmod.get_type_symbols();
+
+        self.gen_sorted_types();
+        self.gen_type_name_method();
+        for (&sf in source_files) {
+            self.gen_file(sf);
+        }
+    }
+
+    pub fn get_output(mut &self) str {
+        let mut b = strings::Builder::new(300000);
+        let is_test = self.prefs.build_mode == .Test;
+        let is_lib = self.prefs.build_mode == .Library;
+
+        b.write_str(HEADER);
+        if (!self.prefs.is_release) {
+            b.write_str(G_BREAKPOINT);
+        }
+        b.writeln(self.chash_definitions.to_str());
+        b.writeln(self.typedefs.to_str());
+        b.writeln(self.typedefs2.to_str());
+        b.writeln(self.type_definitions.to_str());
+        b.writeln(self.result_definitions.to_str());
+        b.writeln(self.const_decls.to_str());
+
+        if (is_test) {
+            b.writeln("// --= TESTS =------------------= UTILS =--");
+            b.writeln("#define TOTAL_TESTS " + self.test_c.to_str());
+            b.writeln("i32 OK_TESTS = 0;");
+            b.writeln("i32 FAIL_TESTS = 0;");
+            b.writeln("i32 SKIP_TESTS = 0;");
+            b.writeln("// ----------------------------------------\n");
+        }
+
+        if (!is_lib) {
+            b.writeln("void __init_consts(void);");
+            if (!self.prefs.no_std) {
+                b.writeln("void __std__init_consts(void);");
+            }
+        }
+        b.writeln(self.funcs_definitions.to_str());
+        b.writeln(self.helpers_definitions.to_str());
+        b.writeln(self.helpers.to_str());
+
+        // the output
+        b.write_str(self.out.to_str());
+
+        // constants init
+        if (is_lib) {
+            b.writeln(fmt!("void __{}__init_consts(void) {", self.prefs.src_name));
+        } else {
+            b.writeln("void __init_consts(void) {");
+            if (!self.prefs.no_std) {
+                b.writeln("\t__std__init_consts();");
+            }
+        }
+        b.write_str(self.consts_inits.to_str());
+        b.writeln("}\n");
+
+        // entry point
+        if (!is_lib) {
+            b.write_str("i32 main(");
+            if (!is_test and self.table.main_has_args) {
+                b.write_str("i32 argc, charptr* argv");
+            } else {
+                b.write_str("void");
+            }
+            b.writeln(") {");
+
+            if (!self.prefs.no_std) {
+                b.writeln("#if __STDC_HOSTED__ == 1");
+                b.writeln("\tsignal(11, std__segmentation_fault_handler);");
+                b.writeln("#endif");
+            }
+
+            if (!is_test and self.table.main_has_args) {
+                b.writeln("\t_Vec__std__Str args = std__init_args(argc, argv);");
+            }
+
+            b.writeln("\t__init_consts();");
+
+            if (is_test) {
+                b.writeln("\tstd__testing__print_header();");
+                b.write_str(self.test_calls.to_str());
+                b.writeln(
+                    "\tstd__testing__print_summary_tests(FAIL_TESTS, OK_TESTS, SKIP_TESTS, "
+                    "TOTAL_TESTS);"
+                );
+            } else {
+                b.write_str(fmt!("\t{}__main(", self.prefs.src_name));
+                if (self.table.main_has_args) {
+                    b.write_str("args");
+                }
+                b.writeln(");");
+                if (self.table.main_has_args) {
+                    b.writeln("\tstd__Vec__drop(&args);");
+                }
+            }
+
+            b.writeln("\treturn 0;");
+            b.writeln("}");
+        }
+
+        let res = b.to_str();
+        unsafe {
+            b.drop();
+        }
+        return res;
+    }
+
+    fn gen_file(mut &self, sf: &ast::SourceFile) {
+        self.sf = sf;
+        self.mods = sf.module;
+        self.gen_decls(sf.decls);
+    }
+
+    fn gen_sorted_types(mut &self) {
+        let mut types = vec[&ast::TypeSymbol]::new();
+        for (t in self.type_symbols) {
+            push!(types, t);
+        }
+        self.gen_types(self.sort_structs(types));
+    }
+
+    fn gen_types(mut &self, mut ts: vec[&ast::TypeSymbol]) {
+        for (mut t in ts) {
+            self.gen_type(t);
+        }
+    }
+
+    fn gen_type(mut &self, mut ts: &ast::TypeSymbol) {
+        switch (ts.kind) {
+            .Alias => {
+                let name = self.escape_c_name(ts.gname);
+                let parent = (ts.info as &ast::AliasInfo).parent;
+                self.typedefs.writeln(fmt!("typedef {} {};", parent.to_cstr(), name));
+            }
+            .BoxT => {
+                let parent = cast(ts.info, &ast::BoxInfo).elem_typ.ts();
+                self.typedefs.write_str("typedef ");
+                if (parent.kind == .Struct or parent.kind == .Str) {
+                    self.typedefs.write_str("struct ");
+                }
+                self.typedefs.writeln(fmt!("{}* {};", parent.gname, ts.gname));
+            }
+            .Array => {
+                let i = ts.info as &ast::ArrayInfo;
+                self.type_definitions.writeln(
+                    fmt!(
+                        "typedef {} {} [{}];\n", i.elem_typ.to_cstr(), ts.gname,
+                        self.expr_as_str(i.size)
+                    )
+                );
+            }
+            .Vector => {
+                self.typedefs.writeln("typedef struct std__Vec " + ts.gname + ";");
+            }
+            .Slice => {
+                self.typedefs.writeln("typedef struct std__Slice " + ts.gname + ";");
+            }
+            .Map => {
+                self.typedefs.writeln(fmt!("typedef std__Map {};", ts.gname));
+            }
+            .Tuple => {
+                self.typedefs.writeln(fmt!("typedef struct {} {};", ts.gname, ts.gname));
+                self.type_definitions.writeln(fmt!("struct {} {", ts.gname));
+                let t = ts.info as &ast::TupleInfo;
+                for (i, &f in t.fields) {
+                    self.type_definitions.writeln(fmt!("    {} s{};", f.to_cstr(), i + 1));
+                }
+                self.type_definitions.writeln("};\n");
+            }
+            .Enum => {
+                let name = self.escape_c_name(ts.gname);
+                let info = (ts.info as &ast::EnumInfo);
+                self.typedefs.writeln(fmt!("typedef enum {} {};", name, name));
+                self.type_definitions.writeln(fmt!("enum {} {", name));
+                for (i, &f in info.fields) {
+                    self.type_definitions.write_str(fmt!("    {}__{}", name, f.name));
+                    if (f.has_expr) {
+                        self.type_definitions.writeln(" = ");
+                        self.type_definitions.writeln(self.expr_as_str(f.expr));
+                    }
+                    if (i < info.fields.len - 1) {
+                        self.type_definitions.writeln(",");
+                    } else {
+                        self.type_definitions.writeln("");
+                    }
+                }
+                self.type_definitions.writeln("};\n");
+            }
+            .Struct, .Union => {
+                let name = ts.gname;
+                if (ts.kind == .Union) {
+                    self.typedefs.writeln(fmt!("typedef union {} {};", name, name));
+                    self.type_definitions.writeln(fmt!("union {} {", name));
+                } else {
+                    self.typedefs.writeln(fmt!("typedef struct {} {};", name, name));
+                    self.type_definitions.writeln(fmt!("struct {} {", name));
+                }
+                if (let base_ts = (ts.info as &ast::StructInfo).base_ts()) {
+                    self.type_definitions.writeln(fmt!("    {} base;", base_ts.gname));
+                    if (ts.fields.len > 0) {
+                        self.type_definitions.writeln("");
+                        self.type_definitions.writeln("    // struct fields");
+                    }
+                }
+                for (&f in ts.fields) {
+                    self.type_definitions.writeln(
+                        fmt!("    {} {};", f.typ.to_cstr(), self.escape_c_name(f.name))
+                    );
+                }
+                if (ts.is_base) {
+                    if (ts.fields.len > 0) {
+                        self.type_definitions.writeln("");
+                    }
+                    self.type_definitions.writeln("    // current-instance-type");
+                    self.type_definitions.writeln("    int _typ; // for downcasting");
+                    self.gen_cast_utils(ts);
+                }
+                self.type_definitions.writeln("};\n");
+
+                // generate a virtual table only when needed
+                if (ts.has_virtual_or_abstracts_methods and ts.is_base) {
+                    let mut sb = strings::Builder::new();
+                    self.helpers.writeln(fmt!("struct _{}_VTbl {", name));
+                    sb.writeln(fmt!("const struct _{}_VTbl _{}_vtbl[] = {", name, name));
+                    sb.write_str(fmt!("\t/* (0) {}: */ { ", ts.gname));
+                    for (i, &m in ts.methods) {
+                        if (m.attrs.contains("virtual") or m.attrs.contains("abstract")) {
+                            self.helpers.write_str(
+                                fmt!(
+                                    "    {} (*{})({}* self", m.ret_typ.to_cstr(),
+                                    self.escape_c_name(m.name), ts.gname
+                                )
+                            );
+                            if (m.args.len > 0) {
+                                self.helpers.write_str(", ");
+                                for (j, &arg in m.args) {
+                                    self.helpers.write_str(
+                                        fmt!("{} {}", arg.typ.to_cstr(),
+                                        self.escape_c_name(arg.name))
+                                    );
+                                    if (j < m.args.len - 1) {
+                                        self.helpers.write_str(", ");
+                                    }
+                                }
+                            }
+                            self.helpers.writeln(");");
+                            sb.write_str(fmt!("{}__{}", ts.gname, m.name));
+                            if (i < ts.methods.len - 1) {
+                                sb.write_str(", ");
+                            }
+                        }
+                    }
+                    sb.write_str(" }");
+                    if (ts.inherited_ts.len > 0) {
+                        sb.writeln(", ");
+                    } else {
+                        sb.writeln("");
+                    }
+
+                    let mut sb2 = strings::Builder::new();
+                    self.helpers_definitions.writeln(
+                        fmt!("i32 _{}__vtbl_index(i32 hash);", ts.gname)
+                    );
+                    sb2.writeln(fmt!("i32 _{}__vtbl_index(i32 hash) {", ts.gname));
+                    sb2.writeln("\tswitch (hash) {");
+                    for (i, its in ts.inherited_ts) {
+                        sb.write_str(fmt!("\t/* ({}) {}: */ { ", i + 1, its.gname));
+                        sb2.writeln(fmt!("\t\tcase {}: return {};", its.gname.hash(), i + 1));
+                        for (j, &m in ts.methods) {
+                            if (m.attrs.contains("virtual")) {
+                                if (its.has_method(m.name)) {
+                                    sb.write_str(fmt!("{}__{}", its.gname, m.name));
+                                } else {
+                                    sb.write_str(fmt!("{}__{}", ts.gname, m.name));
+                                }
+                            } elif (m.attrs.contains("abstract")) {
+                                sb.write_str(fmt!("{}__{}", its.gname, m.name));
+                            }
+                            if (j < ts.methods.len - 1) {
+                                sb.write_str(", ");
+                            }
+                        }
+                        sb.write_str(" }");
+                        if (i < ts.inherited_ts.len - 1) {
+                            sb.writeln(", ");
+                        } else {
+                            sb.writeln("");
+                        }
+                    }
+                    sb.write_str("};\n");
+                    self.helpers.writeln("};\n");
+                    self.helpers.writeln(sb.to_str());
+                    sb2.writeln("\t}");
+                    sb2.writeln("\treturn 0;");
+                    sb2.writeln("}");
+                    self.helpers.writeln(sb2.to_str());
+                }
+            }
+            .SumType => {
+                let si = ts.info as &ast::SumTypeInfo;
+                self.typedefs.writeln(fmt!("typedef struct {} {};", ts.gname, ts.gname));
+                self.type_definitions.writeln(fmt!("struct {} { // SumType", ts.gname));
+                self.type_definitions.writeln("    union {");
+                for (f in si.typs) {
+                    let styp = f.to_cstr();
+                    let name = f.ts().gname;
+                    self.type_definitions.writeln(fmt!("        {}* _{};", styp, name));
+                }
+                self.type_definitions.writeln("    };");
+                self.type_definitions.writeln("    i32 _typ;");
+                self.type_definitions.writeln("};\n");
+            }
+            else => {}
+        }
+    }
+
+    fn add_result_type(mut &self, typ: ast::Type) {
+        let name = fmt!("Result__{}", typ.to_gstr());
+        if (name !in self.result_types) {
+            self.typedefs2.writeln(fmt!("typedef struct {} {};", name, name));
+            self.result_definitions.writeln(fmt!("struct {} {", name));
+            self.result_definitions.writeln("    std__Error err;");
+            if (typ.neq(ast::VOID_T)) {
+                self.result_definitions.writeln(fmt!("    {} value;", typ.to_cstr()));
+            }
+            self.result_definitions.writeln("    bool ok;");
+            self.result_definitions.writeln("};\n");
+            push!(self.result_types, name);
+        }
+    }
+
+    fn write(mut &self, s: str) {
+        if (self.indent > 0 and self.empty_line) {
+            self.out.write_str(utils::tabs(self.indent));
+        }
+        self.out.write_str(s);
+        self.empty_line = false;
+    }
+
+    fn writeln(mut &self, s: str = "") {
+        if (self.indent > 0 and self.empty_line) {
+            self.out.write_str(utils::tabs(self.indent));
+        }
+        self.out.writeln(s);
+        self.empty_line = true;
+    }
+
+    @[inline]
+    fn nth_stmt_pos(&self, n: i32) i32 {
+        return self.stmt_path_pos[self.stmt_path_pos.len - (1 + n)];
+    }
+
+    @[inline]
+    fn set_current_pos_as_last_stmt_pos(mut &self) {
+        push!(self.stmt_path_pos, self.out.len());
+    }
+
+    @[inline]
+    fn go_before_stmt(mut &self, n: i32 = 0) str {
+        return self.out.cut_to(self.nth_stmt_pos(n));
+    }
+
+    @[inline]
+    fn mktmp(mut &self) str {
+        return fmt!("_Tmp{}_", ++self.tmps);
+    }
+}

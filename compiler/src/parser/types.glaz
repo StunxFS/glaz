@@ -1,0 +1,201 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+use src::tokens::{ Kind };
+
+impl Parser {
+    fn parse_type(mut &self) ast::Type {
+        let mut typ = ast::VOID_T;
+        let mut pos = self.tok.pos;
+
+        let mut is_optional = false;
+        if (self.typ_level == 0 and self.accept(.Question)) {
+            if (self.accept(.Mult)) {
+                self.error("pointers cannot be optional", &self.prev_tok.pos);
+                self.note("by default pointers can contain the value `null`");
+            }
+            if (self.accept(.Question)) {
+                self.error("optional multi-level types are not allowed", &self.prev_tok.pos);
+            }
+            is_optional = true;
+        }
+
+        switch {
+            self.accept(.Lbracket) => {
+                let mut is_slice = true;
+                self.typ_level++;
+                let elem_typ = self.parse_type();
+                let mut size = self.empty_expr();
+                if (self.accept(.Semicolon)) {
+                    size = self.parse_expr();
+                    is_slice = false;
+                }
+                self.check(.Rbracket);
+                pos = pos.extend(&self.prev_tok.pos);
+                typ = ast::ArrayType{
+                    elem_typ: elem_typ,
+                    is_slice: is_slice,
+                    is_fixed: !is_slice,
+                    size: size,
+                    unresolved: true,
+                    pos: pos
+                };
+                self.typ_level--;
+            }
+            self.accept(.Lparen) => {
+                self.typ_level++;
+                let mut types = vec[ast::Type]::new();
+                do {
+                    push!(types, self.parse_type());
+                } while (self.accept(.Comma));
+                self.check(.Rparen);
+                pos = pos.extend(&self.prev_tok.pos);
+                if (types.len > 8) {
+                    self.error("tuples can have a maximum of up to 8 types", &pos);
+                    self.help("you can use a struct instead");
+                }
+                typ = ast::TupleType{
+                    typs: types,
+                    unresolved: true,
+                    pos: pos
+                };
+                self.typ_level--;
+            }
+            self.accept(.Mult) => { // *T
+                self.typ_level++;
+                let p = self.parse_type();
+                pos = pos.extend(&self.prev_tok.pos);
+                typ = ast::Pointer{
+                    parent: p
+                };
+                self.typ_level--;
+                if (self.typ_level == 0) switch (p) is {
+                    ast::Reference => self.error("cannot use pointers with references", &pos);
+                    else => {}
+                }
+            }
+            self.accept(.Amp) => { // &T
+                if (self.typ_level == 0 and self.inside_extern) {
+                    self.error("cannot use references inside `extern` blocks");
+                    self.help("use pointers instead: `*T`");
+                }
+                self.typ_level++;
+                let p = self.parse_type();
+                pos = pos.extend(&self.prev_tok.pos);
+                typ = ast::Reference{
+                    parent: p
+                };
+                self.typ_level--;
+                if (self.typ_level == 0) switch (p) is {
+                    ast::Reference => self.error("multi-level references are not allowed", &pos);
+                    ast::Pointer => self.error("cannot use references with pointers", &pos);
+                    else => {}
+                }
+            }
+            self.accept(.KeySelfType) => {
+                if (self.inside_impl) {
+                    typ = self.self_type;
+                } else {
+                    self.error(
+                        "`Self` can only be used inside `impl` blocks", &self.prev_tok.pos
+                    );
+                }
+            }
+            self.accept(.KeyBox) => {
+                self.check(.Lt);
+                let elem_typ = self.parse_type();
+                pos = pos.extend(&self.tok.pos);
+                self.check(.Gt);
+                typ = ast::BoxType{
+                    elem_typ: elem_typ,
+                    unresolved: true,
+                    pos: pos
+                };
+            }
+            self.accept(.KeyVec) => {
+                self.typ_level++;
+                self.check(.Lbracket);
+                let elem_typ = self.parse_type();
+                self.check(.Rbracket);
+                pos = pos.extend(&self.prev_tok.pos);
+                typ = ast::ArrayType{
+                    elem_typ: elem_typ,
+                    unresolved: true,
+                    pos: pos
+                };
+                self.typ_level--;
+            }
+            self.accept(.KeyMap) => {
+                self.check(.Lt);
+                self.parse_custom_name("str");
+                self.check(.Comma);
+                let value_typ = self.parse_type();
+                pos = pos.extend(&self.tok.pos);
+                self.check(.Gt);
+                typ = ast::MapType{
+                    val_typ: value_typ,
+                    unresolved: true,
+                    pos: pos
+                };
+            }
+            self.tok.kind in vec[Kind]{.KeySrc, .Name} => {
+                self.typ_level++;
+                let epos = self.tok.pos;
+                if (self.peek_tok.kind == .DoubleColon) {
+                    let mut path_expr = self.parse_path_expr(
+                        if (self.tok.kind == .KeySrc) self.parse_src() else self.parse_ident()
+                    );
+
+                    if (self.tok.kind == .DoubleColon) do {
+                        path_expr = self.parse_path_expr(path_expr);
+                    } while (self.tok.kind == .DoubleColon);
+
+                    typ = ast::Type::unresolved(path_expr);
+                } else {
+                    let name = self.parse_ident();
+                    if (name is ast::Ident) {
+                        let id = (name as &ast::Ident);
+                        switch (id.name) {
+                            "void" => self.error("cannot use type `void`", &epos);
+                            "bool" => typ = self.table.bool_t;
+                            "i8" => typ = self.table.i8_t;
+                            "i16" => typ = self.table.i16_t;
+                            "i32" => typ = self.table.i32_t;
+                            "i64" => typ = self.table.i64_t;
+                            "isize" => typ = self.table.isize_t;
+                            "u8" => typ = self.table.u8_t;
+                            "u16" => typ = self.table.u16_t;
+                            "u32" => typ = self.table.u32_t;
+                            "u64" => typ = self.table.u64_t;
+                            "usize" => typ = self.table.usize_t;
+                            "f32" => typ = self.table.f32_t;
+                            "f64" => typ = self.table.f64_t;
+                            "rune" => typ = self.table.rune_t;
+                            "charptr" => typ = self.table.charptr_t;
+                            "rawptr" => typ = self.table.rawptr_t;
+                            "str" => typ = self.table.str_t;
+                            "untyped_int" => typ = self.table.untyped_int_t;
+                            "untyped_float" => typ = self.table.untyped_float_t;
+                            else => typ = ast::Type::unresolved(name);
+                        }
+                    } else {
+                        typ = ast::Type::unresolved(name);
+                    }
+                }
+                self.typ_level--;
+            }
+            else => {
+                self.error(fmt!("expected type, found {}", self.tok));
+                self.next();
+                self.typ_level--;
+            }
+        }
+
+        if (is_optional) {
+            typ = typ.optional();
+        }
+
+        return typ;
+    }
+}

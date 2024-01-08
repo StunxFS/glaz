@@ -1,0 +1,33 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+
+pub const TRUE_LIT: Expr = ast::BoolLiteral{lit: true};
+pub const FALSE_LIT: Expr = ast::BoolLiteral{lit: false};
+
+// NOTE: For some basic expressions (like literals) we reuse the types
+// already defined in the AST.
+pub type Expr = ast::TypeNode | ast::NullLiteral | ast::BoolLiteral | ast::CharLiteral
+	| ast::IntegerLiteral | ast::FloatLiteral | ast::StringLiteral
+	// --
+	| Inst | Ident;
+
+impl Expr {
+	pub fn to_stmt(self) Stmt {
+		return ExprStmt{
+			expr: self
+		};
+	}
+}
+
+/// Represents a simple GIR instruction.
+pub struct Inst {
+	kind: InstKind,
+	args: vec[Expr]
+}
+
+pub struct Ident {
+	pub name: str,
+	pub typ: ast::Type
+}

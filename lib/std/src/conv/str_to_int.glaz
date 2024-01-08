@@ -1,0 +1,217 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::limits;
+
+fn lower(c: u8) u8 {
+	return c | ('x' - 'X');
+}
+
+const I32_SIZE: i32 = 32;
+
+/// This is like `str_to_int` but for unsigned numbers.
+/// A sign prefix is not permitted.
+pub fn str_to_uint(s_: str, base__: i32, bit_size_: i32) !u64 {
+	let mut base_ = base__;
+	let mut bit_size = bit_size_;
+
+	if (s_ == "") {
+		raise "strconv::str_to_uint: invalid syntax";
+	}
+	let base0 = base_ == 0;
+	let s = s_;
+
+	let mut start_index = 0;
+	switch {
+		2 <= base_ and base_ <= 36 => { /* valid base; nothing to do */ }
+		base_ == 0 => {
+			// look for octal, hex prefix.
+			base_ = 10;
+			if (s[0] == '0') {
+				switch {
+					s.len >= 3 and lower(s[1]) == 'b' => {
+						base_ = 2;
+						start_index += 2;
+					}
+					s.len >= 3 and lower(s[1]) == 'o' => {
+						base_ = 8;
+						start_index += 2;
+					}
+					s.len >= 3 and lower(s[1]) == 'x' => {
+						base_ = 16;
+						start_index += 2;
+					}
+					// manage leading zeros in decimal base's numbers
+					s.len >= 2 and (s[1] >= '0' and s[1] <= '9') => {
+						base_ = 10;
+						start_index++;
+					}
+					else => {
+						base_ = 8;
+						start_index++;
+					}
+				}
+			}
+		}
+		else => {
+			raise fmt!("strconv::str_to_uint: invalid base {}", base_);
+		}
+	}
+
+	if (bit_size == 0) {
+		bit_size = I32_SIZE;
+	} elif (bit_size < 0 or bit_size > 64) {
+		raise fmt!("strconv::str_to_uint: invalid bit size {}", bit_size);
+	}
+
+	// Cutoff is the smallest number such that `cutoff * base > MAX_U64`.
+	// Use compile-time constants for common cases.
+	let cutoff: u64 = limits::MAX_U64 / cast(base_, u64) + cast(1, u64);
+
+	let max_val = if (bit_size == 64) limits::MAX_U64 else (cast(1, u64) << cast(bit_size, u64)) - cast(1, u64);
+	let mut underscores = false;
+	let mut n: u64 = 0;
+	for (i in start_index..s.len) {
+		let c = s[i];
+		let cl = lower(c);
+
+		let mut d: u8 = 0;
+		switch {
+			c == '_' and base0 => {
+				underscores = true;
+				continue;
+			}
+			'0' <= c and c <= '9' => d = c - '0';
+			'a' <= cl and cl <= 'z' => d = cl - 'a' + 10;
+			else => {
+				raise "strconv::str_to_uint: invalid syntax";
+			}
+		}
+
+		if (d >= cast(base_, u8)) {
+			raise "strconv::str_to_uint: invalid syntax";
+		}
+
+		if (n >= cutoff) {
+			// `n * base_` overflows
+			raise "strconv::str_to_uint: value out of range";
+		}
+		n *= cast(base_, u64);
+
+		let n1 = n + cast(d, u64);
+		if (n1 < n or n1 > max_val) {
+			// `n + d` overflows
+			raise "strconv::str_to_uint: value out of range";
+		}
+		n = n1;
+	}
+
+	if (underscores and !underscore_ok(s)) {
+		raise "strconv::str_to_uint: invalid syntax";
+	}
+
+	return n;
+}
+
+/// Interprets a string `s` in the given `base_` (0, 2 to 36) and bit size
+/// (0 to 64) and returns the corresponding value i.
+///
+/// The string may begin with a leading sign: "+" or "-".
+///
+/// If the base argument is 0, the true base is implied by the string's
+/// prefix following the sign (if present): 2 for "0b", 8 for "0" or "0o",
+/// 16 for "0x", and 10 otherwise. Also, for argument base 0 only,
+/// underscore characters are permitted as defined by the Glaz syntax for
+/// integer literals.
+///
+/// The bit_size argument specifies the integer type that the result must fit
+/// into. Bit sizes 0, 8, 16, 32, and 64 correspond to i8, i16, i32, and i64.
+/// If bit_size is below 0 or above 64, an error is returned.
+pub fn str_to_int(s: str, base_: i32, bit_size_: i32) !i64 {
+	let mut bit_size = bit_size_;
+	if (s == "") {
+		raise "strconv::str_to_int: invalid syntax";
+	}
+
+	// pick off leading sign.
+	let mut s0 = s;
+	let mut neg = false;
+	if (s[0] == '+') {
+		s0 = s[1:];
+	} elif (s[0] == '-') {
+		neg = true;
+		s0 = s[1:];
+	}
+
+	// convert unsigned and check range.
+	let un = try str_to_uint(s0, base_, bit_size);
+	if (bit_size == 0) {
+		bit_size = I32_SIZE;
+	}
+
+	let cutoff = cast(1, u64) << cast(bit_size - 1, u32);
+	if (!neg and un >= cutoff) {
+		raise "strconv::str_to_int: value out of range";
+	}
+	if (neg and un > cutoff) {
+		raise "strconv::str_to_int: value out of range";
+	}
+
+	return if (neg) -cast(un, i64) else cast(un, i64);
+}
+
+/// Reports whether the underscores in `s_` are allowed.
+/// Checking them in this one function lets all the parsers skip over them
+/// simply. Underscore must appear only between digits or between a base
+/// prefix and a digit.
+fn underscore_ok(s_: str) bool {
+	// saw tracks the last character (class) we saw:
+	// ^ for beginning of number,
+	// 0 for a digit or base prefix,
+	// _ for an underscore,
+	// ! for none of the above.
+	let mut saw = '^';
+	let mut i = 0;
+	let s = s_;
+
+	// optional sign.
+	if (s.len >= 1 and (s[0] == '-' or s[0] == '+')) {
+		i++;
+	}
+
+	// optional base prefix.
+	let mut hex = false;
+	if (s.len - i >= 2 and s[i] == '0' and (
+		lower(s[i + 1]) == 'b' or lower(s[i + 1]) == 'o' or lower(s[i + 1]) == 'x'
+	)) {
+		saw = '0'; // base prefix counts as a digit for "underscore as digit separator"
+		hex = lower(s[i + 1]) == 'x';
+		i += 2;
+	}
+
+	// number proper.
+	for (i_ in i..s.len) {
+		// digits are always okay.
+		if (('0' <= s[i_] and s[i_] <= '9') or (hex and 'a' <= lower(s[i_])
+			and lower(s[i_]) <= 'f')) {
+			saw = '0';
+			continue;
+		}
+		// underscore must follow digit.
+		if (s[i_] == '_') {
+			if (saw != '0') {
+				return false;
+			}
+			saw = '_';
+			continue;
+		}
+		// underscore must also be followed by digit.
+		if (saw == '_') {
+			return false;
+		}
+		// saw non-digit, non-underscore.
+		saw = '!';
+	}
+
+	return saw != '_';
+}

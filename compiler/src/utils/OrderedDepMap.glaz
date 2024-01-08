@@ -1,0 +1,63 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+pub struct OrderedDepMap {
+	pub mut keys: vec[str],
+	mut data: map<str, vec[str]>
+}
+
+impl OrderedDepMap {
+	pub fn set(mut &self, name: str, deps: vec[str]) {
+		if (name !in self.data) {
+			push!(self.keys, name);
+		}
+		self.data[name] = deps;
+	}
+
+	@[inline]
+	pub fn get(&self, name: str) vec[str] {
+		if (name in self.data) {
+			return self.data[name];
+		}
+		return vec[str]::new();
+	}
+
+	pub fn add(mut &self, name: str, deps: vec[str]) {
+		let mut d = self.get(name);
+		for (dep in deps) {
+			if (dep !in d) {
+				push!(d, dep);
+			}
+		}
+		self.set(name, d);
+	}
+
+	pub fn delete(mut &self, name: str) ! {
+		if (name !in self.data) {
+			raise fmt!("no such key `{}`", name);
+		}
+		for (i, _ in self.keys) {
+			if (self.keys[i] == name) {
+				self.keys.delete(i);
+				break;
+			}
+		}
+		self.data.remove(name);
+	}
+
+	pub fn apply_diff(mut &self, name: str, deps: vec[str]) {
+		let mut diff = vec[str]::new();
+		let deps_of_name = self.get(name);
+		for (dep in deps_of_name) {
+			if (dep !in deps) {
+				push!(diff, dep);
+			}
+		}
+		self.set(name, diff);
+	}
+
+	@[inline]
+	pub fn size(&self) i32 {
+		return self.data.len;
+	}
+}

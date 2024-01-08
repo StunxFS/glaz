@@ -1,0 +1,106 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::tokens;
+
+const EMPTY_POSITION: tokens::Position = tokens::Position{};
+
+impl Module {
+	pub fn add_or_get_type_symbol(mut &self, ts: TypeSymbol) &TypeSymbol {
+		for (&sym in self.syms) {
+			if (sym is TypeSymbol) {
+				let ts_s = sym as &TypeSymbol;
+				if (ts_s.gname == ts.gname) {
+					return ts_s;
+				}
+			}
+		}
+		let idx = self.syms.len;
+		push!(self.syms, ts);
+		return cast(&self.syms[idx], &TypeSymbol);
+	}
+
+	pub fn add_or_get_tuple(mut &self, types: vec[Type]) &TypeSymbol {
+		let mut name, mut gname = "(", "_Tuple__";
+		let mut fields = vec[Field]::new();
+		for (i, typ in types) {
+			name += typ.to_str();
+			gname += typ.to_gstr();
+			if (i < types.len - 1) {
+				name += ", ";
+				gname += "__";
+			}
+			push!(fields, Field{
+				name: fmt!("s{}", i + 1),
+				is_pub: true,
+				typ: typ
+			});
+		}
+		name += ")";
+		return self.add_or_get_type_symbol(TypeSymbol{
+			name: name,
+			gname: gname,
+			kind: .Tuple,
+			info: TupleInfo{
+				fields: types
+			},
+			fields: fields
+		});
+	}
+
+	pub fn add_or_get_map(mut &self, value_type: Type) &TypeSymbol {
+		return self.add_or_get_type_symbol(TypeSymbol{
+			name: fmt!("map<str, {}>", value_type),
+			gname: fmt!("_Map__str__{}", value_type.to_gstr()),
+			kind: .Map,
+			info: MapInfo{
+				val_typ: value_type
+			}
+		});
+	}
+
+	pub fn add_or_get_vector(mut &self, value_type: Type) &TypeSymbol {
+		return self.add_or_get_type_symbol(TypeSymbol{
+			name: fmt!("[{}]", value_type),
+			gname: fmt!("_Vec__{}", value_type.to_gstr()),
+			kind: .Vector,
+			info: VectorInfo{
+				elem_typ: value_type
+			}
+		});
+	}
+
+	pub fn add_or_get_array(mut &self, size: Expr, value_type: Type) &TypeSymbol {
+		return self.add_or_get_type_symbol(TypeSymbol{
+			name: fmt!("[{}; {}]", value_type, size),
+			gname: fmt!("_Array__{}__{}", value_type.to_gstr(), size),
+			kind: .Array,
+			info: ArrayInfo{
+				elem_typ: value_type,
+				size: size
+			}
+		});
+	}
+
+	pub fn add_or_get_slice(mut &self, value_type: Type) &TypeSymbol {
+		return self.add_or_get_type_symbol(TypeSymbol{
+			name: fmt!("[{}]", value_type),
+			gname: fmt!("_Slice__{}", value_type.to_gstr()),
+			kind: .Slice,
+			info: SliceInfo{
+				elem_typ: value_type
+			}
+		});
+	}
+
+	pub fn add_or_get_box(mut &self, value_type: Type) &TypeSymbol {
+		return self.add_or_get_type_symbol(TypeSymbol{
+			name: fmt!("Box<{}>", value_type),
+			gname: fmt!("_Box__{}", value_type.to_gstr()),
+			kind: .BoxT,
+			info: BoxInfo{
+				elem_typ: value_type
+			}
+		});
+	}
+}

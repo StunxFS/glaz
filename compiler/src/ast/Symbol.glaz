@@ -1,0 +1,305 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::panic;
+
+use src::tokens;
+
+pub type Symbol = UnknownSymbol | Module | Const | TypeSymbol | Function = UnknownSymbol{};
+
+pub struct UnknownSymbol {}
+
+pub struct Const {
+	pub name: str,
+	pub module: str,
+	pub is_pub: bool,
+	pub pos: tokens::Position,
+	pub typ: Type
+}
+
+pub struct Module {
+	pub name: str,
+	pub scope: &Scope = &Scope{},
+	pub mut syms: vec[Symbol],
+	pub module: str,
+	pub is_pub: bool,
+	pub pos: tokens::Position
+}
+
+impl Module {
+	pub fn add(mut &self, sym: Symbol) ! {
+		let name = sym.name();
+		if (let x = self.find(name)) {
+			if (x is Module and sym is Module) {
+				let mut mo = x as &Module;
+				let mc = sym as &Module;
+				for (s in mc.syms) {
+					let s_name = s.name();
+					if (let _ = mo.find(s_name)) {
+						raise fmt!(
+							"the name `{}` is defined multiple times inside module `{}`",
+							s_name, x.name()
+						);
+					}
+					push!(mo.syms, s);
+				}
+			} else {
+				raise fmt!("the name `{}` is defined multiple times", name);
+			}
+		} else {
+			push!(self.syms, sym);
+		}
+	}
+
+	pub fn find(&self, name: str) ?&Symbol {
+		for (&sym in self.syms) {
+			if (name == sym.name()) {
+				return sym;
+			}
+		}
+		return null;
+	}
+
+	pub fn get_type_symbols(&self) vec[&TypeSymbol] {
+		let mut tss = vec[&TypeSymbol]::new();
+		for (s in self.syms) {
+			switch (s) is {
+				TypeSymbol => {
+					push!(tss, s as &TypeSymbol);
+				}
+				Module => {
+					extend!(tss, (s as &Module).get_type_symbols());
+				}
+				else => {}
+			}
+		}
+		return tss;
+	}
+}
+
+pub struct Param {
+	pub name: str,
+	pub is_mut: bool,
+	pub pos: tokens::Position,
+	pub mut default_expr: Expr,
+	pub has_default_expr: bool,
+	pub typ: Type
+}
+
+impl Param {
+	@[inline]
+	pub fn equals(&self, other: &Param) bool {
+		return self.name == other.name and self.is_mut == other.is_mut
+			and self.has_default_expr == other.has_default_expr and self.typ.eq(other.typ);
+	}
+}
+
+pub struct Function {
+	pub attrs: Attrs,
+	pub name: str,
+	pub args: vec[Param],
+	pub rec_typ: Type,
+	pub rec_is_mut: bool,
+	pub ret_typ: Type,
+	pub module: str,
+	pub pos: tokens::Position,
+	pub is_pub: bool,
+	pub is_extern: bool,
+	pub is_unsafe: bool,
+	pub is_method: bool,
+	pub is_associated: bool,
+	pub is_deprecated: bool,
+	pub is_inline: bool,
+	pub is_variadic: bool,
+	pub is_main: bool,
+	pub has_named_args: bool
+}
+
+impl Function {
+	pub fn is_compatible_with(&self, other: &Function) bool {
+		if (self.name != other.name) {
+			return false;
+		}
+		if (self.ret_typ.neq(other.ret_typ)) {
+			return false;
+		}
+		// if (self.rec_is_mut != other.rec_is_mut) {
+		// 	return false;
+		// }
+		if (self.args.len != other.args.len) {
+			return false;
+		}
+		if (self.is_variadic != other.is_variadic) {
+			return false;
+		}
+		for (i, &arg in self.args) {
+			let oarg = &other.args[i];
+			if (!arg.equals(oarg)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	pub fn real_args_len(&self) i32 {
+		let mut count = 0;
+		for (&arg in self.args) {
+			if (arg.typ !is Variadic) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	pub fn qualname(&self) str {
+		if (self.is_method) {
+			return fmt!("{}::{}", self.rec_typ, self.name);
+		}
+		if (self.module.len > 0) {
+			return fmt!("{}::{}", self.module, self.name);
+		}
+		return self.name;
+	}
+
+	@[inline]
+	pub fn kind(&self) str {
+		return if (self.is_method) "method" else if (self.is_associated)
+			"associated function" else "function";
+	}
+}
+
+impl Symbol {
+	pub fn name(self) str {
+		switch (self) is {
+			Module => return (self as &Module).name;
+			Const => return (self as &Const).name;
+			TypeSymbol => return (self as &TypeSymbol).name;
+			Function => return (self as &Function).name;
+			else => return "<unknown-symbol>";
+		}
+	}
+
+	pub fn kind(self) str {
+		switch (self) is {
+			Module => return "module";
+			Const => return "constant";
+			TypeSymbol => return (self as &TypeSymbol).kind.to_str();
+			Function => return (self as &Function).kind();
+			else => return "<unknown-symbol>";
+		}
+	}
+
+	pub fn add(mut self, sym: Symbol) ! {
+		switch (self) is {
+			Module => try (self as &Module).add(sym);
+			TypeSymbol => try (self as &TypeSymbol).add(sym);
+			else => {
+				raise fmt!("cannot register symbol `{}` in an invalid namespace", sym.name());
+			}
+		}
+	}
+
+	pub fn find(self, name: str) ?&Symbol {
+		switch (self) is {
+			Module => return (self as &Module).find(name);
+			TypeSymbol => return (self as &TypeSymbol).find(name);
+			else => return null;
+		}
+	}
+
+	pub fn find_with_path(&self, path: str) !&Symbol {
+		let elems = path.split("::");
+		if (path.len == 0 or elems.len == 0) {
+			panic("`find_with_path` used with 0 elems");
+		}
+
+		let mut sc, mut rsym = self, self;
+		for (i, elem in elems) {
+			if (let x = sc.find(elem)) {
+				if (i < elems.len - 1) {
+					if (x is Module) {
+						sc = x;
+					} else {
+						raise "cannot use next symbol";
+					}
+				}
+				rsym = x;
+			} else {
+				if (i == 0) {
+					raise fmt!("cannot find `{}` in the global scope", elem);
+				} else {
+					let cur_path = elems[:i].join("::");
+					raise fmt!("cannot find `{}` in `{}`", elem, cur_path);
+				}
+			}
+		}
+
+		return rsym;
+	}
+
+	pub fn get_public_symbols(self) vec[Symbol] {
+		let mut syms = vec[Symbol]::new();
+		switch (self) is {
+			Module => {
+				let m = self as &Module;
+				for (s in m.syms) {
+					if (s.is_pub()) {
+						push!(syms, s);
+					}
+				}
+			}
+			TypeSymbol => {
+				let ts = self as &TypeSymbol;
+				for (s in ts.syms) {
+					if (s.is_pub()) {
+						push!(syms, s);
+					}
+				}
+			}
+			else => {}
+		}
+		return syms;
+	}
+
+	pub fn module(self) str {
+		switch (self) is {
+			Module => return (self as &Module).module;
+			Const => return (self as &Const).module;
+			TypeSymbol => return (self as &TypeSymbol).module;
+			Function => return (self as &Function).module;
+			else => {}
+		}
+		return "";
+	}
+
+	pub fn typ(self) Type {
+		switch (self) is {
+			Const => return (self as &Const).typ;
+			TypeSymbol => return Type::new(self as &TypeSymbol);
+			Function => return (self as &Function).ret_typ;
+			else => return VOID_T;
+		}
+	}
+
+	pub fn pos(self) tokens::Position {
+		switch (self) is {
+			Module => return (self as &Module).pos;
+			Const => return (self as &Const).pos;
+			TypeSymbol => return (self as &TypeSymbol).pos;
+			Function => return (self as &Function).pos;
+			else => unreachable!();
+		}
+		return tokens::Position{};
+	}
+
+	pub fn is_pub(self) bool {
+		switch (self) is {
+			Module => return (self as &Module).is_pub;
+			Const => return (self as &Const).is_pub;
+			TypeSymbol => return (self as &TypeSymbol).is_pub;
+			Function => return (self as &Function).is_pub;
+			else => {}
+		}
+		return false;
+	}
+}

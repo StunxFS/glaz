@@ -1,0 +1,90 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+// TODO: ugly hack for sorting array. `sort` method
+extern {
+    fn qsort(mut base_: rawptr, items: usize, item_size: usize, cb: rawptr);
+    const std__strings__sorter: rawptr;
+}
+
+fn sorter(a: Possibility, b: Possibility) bool {
+    return a.similarity < b.similarity;
+}
+
+struct Possibility {
+    value: str,
+    similarity: f32
+}
+
+pub struct Suggestion {
+    mut known: vec[Possibility],
+    wanted: str,
+    limit: i32
+}
+
+impl Suggestion {
+    pub fn new(wanted: str, possibilities: vec[str], limit: i32 = 25) Suggestion {
+        let mut s = Suggestion{
+            wanted: wanted,
+            limit: limit
+        };
+        s.add_many(possibilities);
+        s.sort();
+        return s;
+    }
+
+    pub fn add(mut &self, val: str) {
+        if (val == self.wanted) {
+            return;
+        }
+        // round to 3 decimal places to avoid float comparison issues
+        let similarity = cast(
+            cast(dice_coefficient(self.wanted, val) * 1000, i32), f32
+        ) / 1000;
+        push!(self.known, Possibility{
+            value: val,
+            similarity: similarity
+        });
+    }
+
+    pub fn add_many(mut &self, many: vec[str]) {
+        for (x in many) {
+            self.add(x);
+        }
+    }
+
+    @[inline]
+    pub fn sort(mut &self) {
+        unsafe {
+            C::qsort(
+                self.known.data, cast(self.known.len, usize), sizeof!(Possibility),
+                C::std__strings__sorter
+            );
+        }
+    }
+
+    pub fn suggest(&self) str {
+        if (self.known.len > 0) {
+            let top_posibility = self.known[self.known.len - 1];
+            if (top_posibility.similarity > 0.5) {
+                return fmt!("did you mean `{}`?", top_posibility.value);
+            }
+            let values = collect_possibilities(self.known);
+            if (values.len == 1) {
+                return fmt!("1 possibility: {}", values[0]);
+            } elif (values.len < self.limit) {
+                // it is hard to read/use too many suggestions
+                return fmt!("{} possibilities: {}", values.len, values.join(", "));
+            }
+        }
+        return "";
+    }
+}
+
+fn collect_possibilities(possibilities: vec[Possibility]) vec[str] {
+    let mut res = vec[str]::new(0, possibilities.len);
+    for (&p in possibilities) {
+        push!(res, fmt!("`{}`", p.value));
+    }
+    return res;
+}

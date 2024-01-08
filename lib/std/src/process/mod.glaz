@@ -1,0 +1,14 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+@[noreturn]
+pub fn abort() {
+	unsafe { C::abort(); }
+	loop {}
+}
+
+@[noreturn]
+pub fn exit(code: i32 = 0) {
+	unsafe { C::exit(code); }
+	loop {}
+}

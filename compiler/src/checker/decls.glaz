@@ -1,0 +1,432 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::{conv, limits, path};
+
+use src::utils::is_quote;
+use src::ast::{ self, VOID_T };
+
+impl Checker {
+	fn check_decls(mut &self, mut decls: vec[ast::Decl]) {
+		for (mut &decl in decls) {
+			self.check_decl(decl);
+		}
+	}
+
+	fn check_decl(mut &self, mut decl: &ast::Decl) {
+		switch (decl) is {
+			ast::CHash => self.check_chash(decl as &ast::CHash);
+			ast::Use => { /* resolved and checked in `resolver` stage */ }
+			ast::ExternBlock => self.check_extern_block(decl as &ast::ExternBlock);
+			ast::ModDecl => self.check_mod_decl(decl as &ast::ModDecl);
+			ast::ConstDecl => self.check_const_decl(decl as &ast::ConstDecl);
+			ast::TypeDecl => self.check_type_decl(decl as &ast::TypeDecl);
+			ast::StructDecl => self.check_struct_decl(decl as &ast::StructDecl);
+			ast::EnumDecl => self.check_enum_decl(decl as &ast::EnumDecl);
+			ast::ImplDecl => self.check_impl_decl(decl as &ast::ImplDecl);
+			ast::FnDecl => self.check_fn_decl(decl as &ast::FnDecl);
+			ast::TestDecl => self.check_test_decl(decl as &ast::TestDecl);
+			else => {}
+		}
+	}
+
+	fn check_chash(mut &self, mut c: &ast::CHash) {
+		let tokens = c.line.split(" ");
+		if (tokens.len < 2) {
+			self.error("invalid C hash declaration", &c.pos);
+		} else {
+			let name = tokens[0];
+
+			let original_value = if (tokens.len == 2) tokens[1] else tokens[1:].join(" ");
+			let mut value = original_value;
+			if (value.contains("@GLAZ_ROOT")) {
+				value = value.replace("@GLAZ_ROOT", self.prefs.compiler_dir);
+			}
+			if (value.contains("@FILE_DIR")) {
+				value = value.replace("@FILE_DIR", path::dirname(self.sf.file));
+			}
+			c.flag.value = value;
+
+			switch (name) {
+				"include" => {
+					if (!is_quote(value)) {
+						self.error("including C files should use either `\"header_file.h\"` "
+						"or `<header_file.h>` quoting", &c.pos);
+					} elif (value.contains(".c")) {
+						self.error("cannot use `include` with C source files", &c.pos);
+						self.help(fmt!("use `compile` instead: `#compile {}`", original_value));
+					}
+					c.flag.kind = .Include;
+				}
+				"define" => c.flag.kind = .Define;
+				"compile" => {
+					if (value.ends_with(".o\"")) {
+						push!(self.table.objects, value);
+					} else {
+						push!(self.table.cfiles_to_compile, value);
+					}
+					c.flag.kind = .Compile;
+				}
+				"flag" => {
+					push!(self.table.cflags, value);
+					c.flag.kind = .Flag;
+				}
+				else => {
+					self.error(fmt!("invalid C hash declaration: `{}`", name), &c.pos);
+					self.help("expected `include`, `define` or `compile`");
+				}
+			}
+		}
+	}
+
+	fn check_extern_block(mut &self, e: &ast::ExternBlock) {
+		self.inside_extern = true;
+		self.check_decls(e.decls);
+		self.inside_extern = false;
+	}
+
+	fn check_mod_decl(mut &self, m: &ast::ModDecl) {
+		self.check_valid_snake_case(m.name, "module", &m.name_pos);
+		let old_s = self.sym;
+		let old_m = self.mods;
+		self.sym = m.sym;
+		self.mods = m.module;
+		self.check_decls(m.decls);
+		self.mods = old_m;
+		self.sym = old_s;
+	}
+
+	fn check_const_decl(mut &self, mut c: &ast::ConstDecl) {
+		self.check_valid_upper_case(c.name, "constant", &c.name_pos);
+		if (c.has_expr) {
+			if (c.expr is ast::NullLiteral) {
+				self.error(fmt!("cannot assign null value to constant `{}`", c.name), &c.pos);
+			} else {
+				let oet = self.expected_type;
+				self.expected_type = c.typ;
+				try self.check_compatible_types(self.check_expr(&c.expr), c.typ) catch {
+					self.error(err.msg, &c.pos);
+				};
+				self.expected_type = oet;
+			}
+		}
+	}
+
+	fn check_type_decl(mut &self, mut t: &ast::TypeDecl) {
+		self.check_valid_pascal_case(t.name, "type alias", &t.name_pos);
+		if (t.is_sumtype and t.has_default_expr) {
+			let ty = self.check_expr(&t.default_expr);
+			if (let sym = self.sym.find(t.name)) {
+				let ts = (sym as &ast::TypeSymbol);
+				try self.check_compatible_types(ty, ast::Type::new(ts)) catch {
+					self.error(err.msg, t.default_expr.pos());
+				};
+			}
+		}
+	}
+
+	fn check_struct_decl(mut &self, mut s: &ast::StructDecl) {
+		self.check_attributes(&s.attrs, .Struct);
+		self.check_valid_pascal_case(s.name, "struct", &s.name_pos);
+		let is_copy = s.attrs.contains("copy");
+		for (mut &f in s.fields) {
+			self.check_attributes(&f.attrs, .Field);
+			self.check_valid_snake_case(f.name, "field", &f.name_pos);
+			if (f.attrs.contains("protected") and f.is_pub) {
+				self.error(
+					fmt!("field `{}.{}` cannot be protected and public at the same time", s.name,
+					f.name), &f.pos
+				);
+			}
+
+			// 'copy' attribute check
+			if (is_copy) {
+				let fts = f.typ.ts();
+				if (!self.is_marked_as_copy(fts)) {
+					self.error(fmt!("struct `{}` cannot be marked as `copy`", s.name), &f.pos);
+					self.note(fmt!("field type `{}` does not is marked as `copy`", fts.qualname()));
+				}
+			}
+
+			if (f.has_default_expr) {
+				let oet = self.expected_type;
+				self.expected_type = f.typ;
+				f.default_expr_typ = self.check_expr(&f.default_expr);
+				try self.check_compatible_types(f.default_expr_typ, f.typ) catch {
+					self.error(err.msg, &f.pos);
+					self.note(fmt!("in field `{}` of struct `{}`", f.name, s.name));
+				};
+				self.expected_type = oet;
+			}
+		}
+	}
+
+	fn check_enum_decl(mut &self, mut e: &ast::EnumDecl) {
+		self.check_attributes(&e.attrs, .Enum);
+		self.check_valid_pascal_case(e.name, "enum", &e.name_pos);
+		let mut seen = vec[i64]::new(0, e.fields.len);
+		for (mut &f in e.fields) {
+			self.check_valid_pascal_case(f.name, "enum field", &f.name_pos);
+			if (f.has_expr) {
+				// TODO: When we can evaluate expressions in comptime, we can use
+				// any expression here. Meanwhile, we can only use integer literals.
+				if (f.expr is ast::IntegerLiteral) {
+					let lit = cast(f.expr, &ast::IntegerLiteral).lit;
+					let val = try conv::str_to_int(lit, 0, 64) orelse 0;
+					if (val < limits::MIN_I32 or val > limits::MAX_I32) {
+						self.error(fmt!("enum value `{}` overflows i32", lit), &f.name_pos);
+					} elif (val in seen) {
+						self.error(fmt!("duplicate enum value `{}`", lit), &f.name_pos);
+					}
+					push!(seen, val);
+				} elif (!self.check_expr(&f.expr).is_int()) {
+					self.error("default value for enum has to be an integer", f.expr.pos());
+				}
+			} else {
+				if (seen.len > 0) {
+					let last = seen[seen.len - 1];
+					if (last == limits::MAX_I32) {
+						self.error("enum value overflows", &f.name_pos);
+					} elif (last + 1 in seen) {
+						self.error(fmt!("duplicate enum value `{}`", last + 1), &f.name_pos);
+					}
+					push!(seen, last + 1);
+				} else {
+					push!(seen, 0);
+				}
+			}
+		}
+	}
+
+	fn check_impl_decl(mut &self, mut i: &ast::ImplDecl) {
+		self.inside_impl = true;
+		self.self_type = i.typ;
+		for (mut &decl in i.decls) {
+			self.check_decl(decl);
+		}
+		self.inside_impl = false;
+	}
+
+	fn check_fn_decl(mut &self, func: &ast::FnDecl) {
+		self.check_attributes(&func.attrs, if (func.is_method) .Method else .Function);
+		self.check_valid_snake_case(func.name, func.info.kind(), &func.name_pos);
+		if (func.ret_typ.ts().kind == .Array) {
+			self.error("cannot return a fixed array", &func.info.pos);
+		}
+		self.func = func;
+
+		let is_noreturn = func.attrs.contains("noreturn");
+		if (is_noreturn and func.ret_typ.neq(ast::VOID_T)) {
+			self.error("@[noreturn] functions cannot have return types", &func.info.pos);
+		}
+		self.inside_noreturn_func = is_noreturn;
+
+		if (func.is_method) {
+			let self_ts = func.rec_typ.ts();
+			let is_protected = func.attrs.contains("protected");
+			let is_virtual = func.attrs.contains("virtual");
+			let is_abstract = func.attrs.contains("abstract");
+			let is_override = func.attrs.contains("override");
+
+			if (is_protected and func.is_pub) {
+				self.error(
+					fmt!("method `{}` cannot be protected and public at the same time",
+					func.name), &func.info.pos
+				);
+			} elif (!func.is_pub and (is_virtual or is_override or is_abstract)) {
+				 self.error(
+					fmt!(
+						"private method `{}.{}` cannot be marked as override, virtual, or abstract",
+						self_ts.name, func.name
+					),
+					&func.info.pos
+				 );
+			}
+
+			if (is_override and (is_abstract or is_virtual)) {
+				self.error(
+					fmt!("method `{}` cannot be marked as override and {} at the same time",
+					func.name, if (is_virtual) "virtual" else "abstract"), &func.info.pos
+				);
+			} elif (is_virtual and is_abstract) {
+				self.error(
+					fmt!("method `{}` cannot be virtual and abstract at the same time",
+					func.name), &func.info.pos
+				);
+			}
+
+			if (self_ts.kind == .Struct) {
+				let sinfo = self_ts.info as &ast::StructInfo;
+				if (func.rec_typ !is ast::Reference) {
+					if (self_ts.is_base or self_ts.fields.len >= 8 or sinfo.has_base
+						or is_virtual or is_abstract) {
+						self.error("use `&self` instead of `self`", &func.info.pos);
+					}
+				}
+			}
+		}
+
+		// special `drop` method check
+		if (func.name == "drop") {
+			if (func.args.len > 0) {
+				self.error("`drop` method cannot have arguments", &func.info.pos);
+			} elif (!func.rec_is_mut or func.rec_typ !is ast::Reference) {
+				self.error(
+					"`drop` method should be defined with `mut &self`",
+					&func.info.pos
+				);
+			} elif (func.ret_typ.neq(ast::VOID_T)) {
+				self.error(
+					"`drop` method should not have a return type",
+					&func.info.pos
+				);
+			}
+		} else for (i, mut &arg in func.args) {
+			self.check_valid_snake_case(arg.name, "argument", &arg.pos);
+			if (arg.typ is ast::Variadic) {
+				if (i != func.args.len - 1) {
+					self.error(
+						fmt!("cannot use variadic type with non-final argument `{}`", arg.name),
+						&arg.pos
+					);
+				} elif (arg.has_default_expr) {
+					self.error("variadic argument cannot have default expression", &arg.pos);
+				}
+			}
+			/* TODO:
+			elif (arg.is_mut and !(arg.typ is ast::Reference or arg.typ.is_pointer())) {
+				self.error("arguments passed by value cannot be mutated", &arg.pos);
+				self.note("only arguments passed by reference can be mutated");
+			}
+			*/
+			elif (arg.has_default_expr) {
+				if (i + 1 < func.args.len and !func.args[i + 1].has_default_expr) {
+					self.error(
+						"arguments with default values must go at the end",
+						&arg.pos
+					);
+				} else {
+					let oet = self.expected_type;
+					self.expected_type = arg.typ;
+					let arg_t = self.check_expr(&arg.default_expr);
+					self.expected_type = oet;
+					try self.check_compatible_types(arg_t, arg.typ) catch {
+						self.error(err.msg, arg.default_expr.pos());
+						self.note(
+							fmt!("in default expression for argument `{}`", arg.name)
+						);
+					};
+				}
+			}
+		}
+		self.check_stmts(func.stmts);
+		let is_abstract = func.info.attrs.contains("abstract");
+		if (!is_noreturn and !is_abstract and !func.is_extern and self.sf.kind != .Declaration) {
+			let ret_is_void = func.ret_typ.eq(VOID_T) or (
+				func.ret_typ is ast::Result and func.ret_typ.parent().eq(VOID_T)
+			);
+			if (!ret_is_void and !self.stmts_has_return(func.stmts)) {
+				self.error(
+					fmt!("missing return at end of {} `{}`", func.info.kind(), func.name),
+					&func.info.pos
+				);
+			}
+		}
+
+		if (is_noreturn and func.stmts.len > 0) {
+			let last_stmt = func.stmts[func.stmts.len - 1];
+			switch (last_stmt) is {
+				ast::LoopStmt => {
+					let loop_stmt = last_stmt as &ast::LoopStmt;
+					if (loop_stmt.stmt is ast::Block) {
+						let blk = loop_stmt.stmt as &ast::Block;
+						if (blk.stmts.len > 0) {
+							self.error("infinite loop should be empty", &loop_stmt.pos);
+						}
+					} else {
+						self.error("infinite loop shoud be `loop {}`", &loop_stmt.pos);
+					}
+				}
+				ast::ExprStmt if ((last_stmt as &ast::ExprStmt).expr is ast::CallExpr) => {
+					let call_expr = (last_stmt as &ast::ExprStmt).expr as &ast::CallExpr;
+					if (!call_expr.info.attrs.contains("noreturn")) {
+						self.error(
+							fmt!("`{}` is not a @[noreturn] function", call_expr.info.name),
+							&call_expr.pos
+						);
+					}
+				}
+				else => {
+					self.error(
+						"@[noreturn] functions should end with a call to another @[noreturn] "
+						"function, or with an infinite loop", &func.info.pos
+					);
+				}
+			}
+		}
+	}
+
+	fn stmts_has_return(&self, stmts: vec[ast::Stmt]) bool {
+		for (stmt in stmts) {
+			if (self.has_return(stmt)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	fn has_return(&self, stmt: ast::Stmt, from_try_expr: bool = false) bool {
+		switch (stmt) is {
+			ast::SwitchStmt => {
+				let s = stmt as &ast::SwitchStmt;
+				for (&b in s.branches) {
+					if (b.is_else and self.has_return(b.stmt)) {
+						return true;
+					}
+				}
+				return false;
+			}
+			ast::IfStmt => {
+				let i = stmt as &ast::IfStmt;
+				if (i.is_comptime and i.branch_idx > -1) {
+					let b = &i.branches[i.branch_idx];
+					return self.has_return(b.stmt);
+				} else {
+					for (&b in i.branches) {
+						if (b.is_else and self.has_return(b.stmt)) {
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+			ast::Block => {
+				return self.stmts_has_return((stmt as &ast::Block).stmts);
+			}
+			ast::ExprStmt => {
+				let e = stmt as &ast::ExprStmt;
+				if (e.expr is ast::TryExpr) {
+					let t = e.expr as &ast::TryExpr;
+					if (!(t.has_orelse or t.has_catch)) {
+						return true;
+					}
+				} elif (e.expr is ast::CallExpr) {
+					let c = e.expr as &ast::CallExpr;
+					if (c.info.attrs.contains("noreturn")) {
+						return true;
+					}
+				}
+				return false;
+			}
+			ast::ReturnStmt, ast::RaiseStmt => return true;
+			ast::BranchStmt => return from_try_expr;
+			else => return false;
+		}
+	}
+
+	fn check_test_decl(mut &self, decl: &ast::TestDecl) {
+		self.inside_test = true;
+		self.check_stmts(decl.stmts);
+		self.inside_test = false;
+	}
+}

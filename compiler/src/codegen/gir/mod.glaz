@@ -1,0 +1,17 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+pub type Stmt = Label | Assign | ExprStmt;
+
+pub struct Label {
+	pub name: str
+}
+
+pub struct Assign {
+	pub name: str,
+	pub expr: Expr
+}
+
+pub struct ExprStmt {
+	pub expr: Expr
+}

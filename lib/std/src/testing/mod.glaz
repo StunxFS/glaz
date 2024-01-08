@@ -1,0 +1,88 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::console;
+
+// FIXME: if we use: `console::can_show_color_on_stdout()`
+// we obtain -> error: use of undeclared module `console`
+const SUPPORT_COLOR: bool = std::console::can_show_color_on_stdout();
+
+fn header(txt: str, sep: str) str {
+    if (SUPPORT_COLOR) {
+        return console::header(txt, sep);
+    }
+    return txt;
+}
+
+fn bold(txt: str) str {
+    if (SUPPORT_COLOR) {
+        return console::bold(txt);
+    }
+    return txt;
+}
+
+fn green(txt: str) str {
+    if (SUPPORT_COLOR) {
+        return console::green(txt);
+    }
+    return txt;
+}
+
+fn red(txt: str) str {
+    if (SUPPORT_COLOR) {
+        return console::red(txt);
+    }
+    return txt;
+}
+
+fn yellow(txt: str) str {
+    if (SUPPORT_COLOR) {
+        return console::yellow(txt);
+    }
+    return txt;
+}
+
+const OK_STATUS: str = bold(green(" [  OK  ] "));
+const FAIL_STATUS: str = bold(red(" [ FAIL ] "));
+const SKIP_STATUS: str = bold(yellow(" [ SKIP ] "));
+const DIVIDER: str = bold(header("", "-"));
+
+@[inline]
+fn print_header() {
+    console::println(bold(header("Glaz Test Runner", "-")));
+}
+
+@[inline]
+fn print_test_ok(name: str) {
+    console::println(OK_STATUS + name);
+}
+
+@[inline]
+fn print_test_fail(name: str, pos: str) {
+    console::eprintln(FAIL_STATUS + name);
+    console::eprintln(pos);
+}
+
+@[inline]
+fn print_test_skip(name: str) {
+    console::eprintln(SKIP_STATUS + name);
+}
+
+fn print_summary_tests(fail_tests: i32, ok_tests: i32, skip_tests: i32, total_tests: i32) {
+    console::println(DIVIDER);
+    console::print(bold("Summary for all tests: "));
+    if (ok_tests > 0) {
+        console::print(bold(green(fmt!("{} passed", ok_tests))));
+        console::print(", ");
+    }
+    if (fail_tests > 0) {
+        console::print(bold(red(fmt!("{} failed", fail_tests))));
+        console::print(", ");
+    }
+    if (skip_tests > 0) {
+        console::print(bold(yellow(fmt!("{} skipped", skip_tests))));
+        console::print(", ");
+    }
+    console::println(bold(fmt!("{} total.", total_tests)));
+    console::println(DIVIDER);
+}

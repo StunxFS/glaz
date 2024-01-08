@@ -1,0 +1,85 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+pub struct Builder {
+	mut data: vec[u8]
+}
+
+impl Builder {
+	@[inline]
+	pub fn new(cap: i32 = 50) Builder {
+		return Builder{
+			data: vec[u8]::new(0, cap)
+		};
+	}
+
+	@[inline]
+	pub fn write_byte(mut &self, b: u8) {
+		push!(self.data, b);
+	}
+
+	pub fn write_rune(mut &self, c: rune) {
+		let mut buf = [u8; 5]::new();
+		let res = unsafe { src::utf32_to_str_no_malloc(cast(c, u32), &buf[0]) };
+		if (res.len == 0) {
+			return;
+		}
+		self.write_str(res);
+	}
+
+	pub fn write_str(mut &self, s: str) {
+		if (s.len == 0) {
+			return;
+		}
+		for (i in 0..s.len) {
+			self.write_byte(s[i]);
+		}
+	}
+
+	pub fn writeln(mut &self, s: str = "") {
+		self.write_str(s);
+		self.write_byte('\n');
+	}
+
+	@[inline]
+	pub fn go_back(mut &self, n: i32) {
+		self.data.trim(self.data.len - n);
+	}
+
+	@[inline]
+	pub fn go_back_to(mut &self, pos: i32) {
+		self.data.trim(pos);
+	}
+
+	pub fn cut_last(mut &self, pos: i32) str {
+		let cut_pos = self.len() - pos;
+		let res = str::from_bytes(&self.data[cut_pos:]);
+		self.data.trim(cut_pos);
+		return res;
+	}
+
+	pub fn cut_to(mut &self, pos: i32) str {
+		if (pos > self.len()) {
+			return "";
+		}
+		return self.cut_last(self.len() - pos);
+	}
+
+	@[inline]
+	pub fn len(&self) i32 {
+		return self.data.len;
+	}
+
+	pub fn to_str(mut &self) str {
+		let res = str::from_bytes(&self.data[:]);
+		self.data.trim(0);
+		return res;
+	}
+
+	@[unsafe]
+	pub fn drop(mut &self) {
+		if (self.data.data != 0) unsafe {
+			self.data.drop();
+		}
+	}
+}

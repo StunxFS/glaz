@@ -1,0 +1,26 @@
+; The Glaz IR
+; This is an example of what the GIR looks like.
+
+fn "add"(1: i32, 2: i32) {
+	res = add i32 1, i32 2
+	ret res
+}
+
+"TwoInt" = type {
+	i32,
+	i32
+}
+
+fn "main"() i32 {
+	dbg_stmt "simple_file.glaz", 5
+	res = call "add"(i32 5, i32 5)
+
+	x = alloca "TwoInt"
+	x_a = getelem x, 1
+	x_b = getelem x, 1
+	store x_a, res
+	store x_b, res
+
+	ret res
+}
+

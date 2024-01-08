@@ -1,0 +1,90 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::conv;
+
+pub const VERSION: str = "0.1.10b";
+pub const FULL_VERSION: str = fmt!("glazc v{}", VERSION);
+
+const TABS: vec[str] = vec[str]{
+	"",
+	"\t",
+	"\t\t",
+	"\t\t\t",
+	"\t\t\t\t",
+	"\t\t\t\t\t",
+	"\t\t\t\t\t\t",
+	"\t\t\t\t\t\t\t",
+	"\t\t\t\t\t\t\t\t",
+	"\t\t\t\t\t\t\t\t\t"
+};
+
+@[inline]
+pub fn tabs(n: i32) str {
+	return if (n < TABS.len) TABS[n] else "\t".repeat(n);
+}
+
+@[inline]
+pub fn is_quote(val: str) bool {
+	return val.match_glob("<*>") or val.match_glob("\"*\"");
+}
+
+@[inline]
+pub fn min(a: i32, b: i32) i32 {
+	return if (a < b) a else b;
+}
+
+@[inline]
+pub fn max(a: i32, b: i32) i32 {
+	return if (a > b) a else b;
+}
+
+pub fn is_snake_case(name: str) bool {
+	for (c in name) {
+		if (c == '_') {
+			continue;
+		}
+		if (c.is_upper()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+pub fn is_pascal_case(name: str) bool {
+	if (!name[0].is_upper()) {
+		return false;
+	}
+	for (c in name) {
+		if (c == '_') {
+			return false;
+		}
+	}
+	return true;
+}
+
+pub fn is_upper_case(name: str) bool {
+	for (c in name) {
+		if (c == '_') {
+			continue;
+		}
+		if (c.is_lower()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+pub fn check_limit(lit: str, min: i64, max: i64) bool {
+	let lit_num = try conv::str_to_int(lit, 0, 64) catch {
+		return false; // conversion failed
+	};
+	return lit_num >= min and lit_num <= max;
+}
+
+pub fn check_limit_unsigned(lit: str, max: u64) bool {
+	let lit_num = try conv::str_to_uint(lit, 0, 64) catch {
+		return false; // conversion failed
+	};
+	return lit_num >= 0 and lit_num <= max;
+}

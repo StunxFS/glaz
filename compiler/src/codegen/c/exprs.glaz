@@ -1,0 +1,1027 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+use src::ast;
+use src::tokens::Kind;
+use src::utils;
+
+impl Gen {
+	fn expr_as_str(mut &self, expr: ast::Expr) str {
+		let pos = self.out.len();
+		self.gen_expr(expr);
+		return self.out.cut_to(pos).trim_space();
+	}
+
+	fn expr_with_cast_as_str(mut &self, expr: ast::Expr, expected_typ: ast::Type) str {
+		let pos = self.out.len();
+		self.gen_expr_with_cast(expr, expected_typ);
+		return self.out.cut_to(pos).trim_space();
+	}
+
+	fn gen_expr_with_cast(mut &self, expr: ast::Expr, expected_typ: ast::Type) {
+		let mut gtyp = expr.typ();
+		if (gtyp.eq(self.table.untyped_int_t)) {
+			gtyp = self.table.i32_t;
+		} elif (gtyp.eq(self.table.untyped_float_t)) {
+			gtyp = self.table.f64_t;
+		}
+		let gts = gtyp.ts();
+		let ets = expected_typ.ts();
+		if (gts.kind == .SumType) {
+			if (ets.kind == .SumType and ets.gname == gts.gname) {
+				self.gen_expr(expr);
+			} else {
+				let styp_to = expected_typ.to_cstr();
+				let dot = if (gtyp is ast::Reference or gtyp is ast::Optional) "->" else ".";
+				if (expected_typ !is ast::Reference) {
+					self.write("*");
+				}
+				self.write("(CAST(std__as_cast((");
+				self.gen_expr(expr);
+				self.write(fmt!("){}_{}, (", dot, ets.gname));
+				self.gen_expr(expr);
+				self.write(fmt!("){}_typ, {}), {}", dot, expected_typ.basic_hash(), styp_to));
+				if (expected_typ !is ast::Reference) {
+					self.write("*");
+				}
+				self.write("))");
+			}
+		} elif (ets.kind == .SumType) {
+			if ((gts.kind == .SumType and ets.gname != gts.gname) or expr is ast::NullLiteral) {
+				// NOTE: `ets.gname != gts.gname` is for support sumtypes inside sumtypes
+				// NOTE: `expr is ast::NullLiteral` is for support optionals
+				self.gen_expr(expr);
+			} else {
+				if (expected_typ is ast::Reference) {
+					self.write("&");
+				}
+				self.write(
+					fmt!("({}){._typ = {}, ._{} = ", ets.gname, gtyp.basic_hash(), gts.gname)
+				);
+				if (gtyp is ast::Reference) {
+					// NOTE: unsafe, because it reference can be invalid
+					self.gen_expr(expr);
+				} else {
+					self.write("CAST(std__mem__duplicate(");
+					self.ref(expr);
+					self.write(fmt!(", sizeof({})), {}*)", gtyp.to_cstr(), gts.gname));
+				}
+				self.write("}");
+			}
+		} elif (expected_typ is ast::Optional) {
+			let parent = expected_typ.parent();
+			if (expr is ast::NullLiteral) {
+				self.write("NULL");
+			} else {
+				if (parent.is_pointer() or parent is ast::Reference) {
+					self.gen_expr_with_cast(expr, parent);
+				} else {
+					let gname = parent.ts().gname;
+					self.write(fmt!("CAST(std__mem__duplicate(ADDR({}, (", gname));
+					self.gen_expr_with_cast(expr, parent);
+					self.write(fmt!(")), sizeof({})), {}*)", gname, gname));
+				}
+			}
+		} elif (ets.kind == .Struct and gts.kind == .Struct
+			and expected_typ is ast::Reference and gtyp is ast::Reference
+			and expected_typ.neq(gtyp)) {
+			self.write(fmt!("_upcast_{}(", ets.gname));
+			self.gen_expr(expr);
+			self.write(fmt!(", {})", gtyp.basic_hash()));
+		} elif (expected_typ is ast::Reference and gts.kind == .BoxT) {
+			if (ets.kind == .Struct and ets != gts and (gts.is_base or ets.is_base)) {
+				let g_ts = (gts.info as &ast::BoxInfo).elem_typ.ts();
+				self.write(fmt!("_upcast_{}(", ets.gname));
+				self.gen_expr(expr);
+				self.write(fmt!(", {})", g_ts.gname.hash()));
+			} else {
+				self.gen_expr(expr);
+			}
+		} elif (ets.kind == .BoxT and gts.kind == .BoxT) {
+			let e_ts = (ets.info as &ast::BoxInfo).elem_typ.ts();
+			let g_ts = (gts.info as &ast::BoxInfo).elem_typ.ts();
+			if (g_ts.kind == .Struct and e_ts.kind == .Struct and g_ts != e_ts
+				and (g_ts.is_base or e_ts.is_base)) {
+				self.write(fmt!("_upcast_{}(", e_ts.gname));
+				self.gen_expr(expr);
+				self.write(fmt!(", {})", g_ts.gname.hash()));
+			} else {
+				self.gen_expr(expr);
+			}
+		} else {
+			self.gen_expr(expr);
+		}
+	}
+
+	fn gen_expr(mut &self, expr: ast::Expr) {
+		switch (expr) is {
+			ast::ArrayDecompose => {
+				let ad = expr as &ast::ArrayDecompose;
+				self.gen_expr(ad.expr);
+			}
+			ast::UnsafeExpr => {
+				let u = expr as &ast::UnsafeExpr;
+				self.gen_expr(u.expr);
+			}
+			ast::NullLiteral => {
+				self.write("NULL");
+			}
+			ast::BoolLiteral => {
+				self.write((expr as &ast::BoolLiteral).lit.to_str());
+			}
+			ast::IntegerLiteral => {
+				let i = expr as &ast::IntegerLiteral;
+				self.write(i.lit.to_str());
+			}
+			ast::FloatLiteral => {
+				let f = expr as &ast::FloatLiteral;
+				self.write(f.lit.to_str());
+			}
+			ast::CharLiteral => {
+				let c = expr as &ast::CharLiteral;
+				if (c.is_byte) {
+					self.write(fmt!("'{}'", c.lit));
+				} else {
+					self.write(fmt!("L'{}'", c.lit));
+				}
+			}
+			ast::StringLiteral => {
+				let s = expr as &ast::StringLiteral;
+				let lit = utils::smart_quote(s.lit, s.is_raw);
+				if (s.is_cstr) {
+					self.write(fmt!("\"{}\"", lit));
+				} else {
+					self.write(fmt!("_SLIT(\"{}\")", lit));
+				}
+			}
+			ast::TupleLiteral => {
+				let t = expr as &ast::TupleLiteral;
+				let gname = t.typ.ts().gname;
+				self.write(fmt!("({}){", gname));
+				for (i, e in t.exprs) {
+					self.write(fmt!(".s{} = ", i + 1));
+					self.gen_expr(e);
+					if (i < t.exprs.len - 1) {
+						self.write(", ");
+					}
+				}
+				self.write("}");
+			}
+			ast::ArrayLiteral => {
+				let a = expr as &ast::ArrayLiteral;
+				let ts = a.typ.ts();
+				let elem_typ_str = a.elem_typ.to_cstr();
+				if (a.is_fixed) {
+					let elem_typ = (ts.info as &ast::ArrayInfo).elem_typ;
+					self.write("{");
+					if (a.is_lit) {
+						self.indent++;
+						for (i, elem in a.elems) {
+							self.gen_expr_with_cast(elem, elem_typ);
+							if (i < a.elems.len - 1) {
+								self.write(", ");
+							}
+						}
+						self.indent--;
+					} else {
+						self.write("0");
+					}
+					self.write("}");
+				} elif (a.is_lit) {
+					let elem_typ = (ts.info as &ast::VectorInfo).elem_typ;
+					self.writeln(
+						fmt!(
+							"std__Vec__from_c_array((({}[]){",
+							elem_typ_str
+						)
+					);
+					self.indent++;
+					for (i, elem in a.elems) {
+						self.gen_expr_with_cast(elem, elem_typ);
+						if (i < a.elems.len - 1) {
+							self.writeln(", ");
+						} else {
+							self.empty_line = true;
+						}
+					}
+					self.indent--;
+					self.write(
+						fmt!(
+							"\n}), {}, {}, sizeof({}))",
+							a.elems.len, a.elems.len, elem_typ_str
+						)
+					);
+				} else {
+					let elem_typ = (ts.info as &ast::VectorInfo).elem_typ;
+					self.write("std__Vec__new_with_init(");
+					if (a.has_len) {
+						self.gen_expr(a.len_expr);
+					} else {
+						self.write("0");
+					}
+					self.write(", ");
+					if (a.has_cap) {
+						self.gen_expr(a.cap_expr);
+					} else {
+						self.write("0");
+					}
+					self.write(", ");
+					if (a.has_init) {
+						self.write(fmt!("ADDR({}, (", elem_typ.to_cstr()));
+						self.gen_expr_with_cast(a.init_expr, elem_typ);
+						self.write("))");
+					} else {
+						self.write("0");
+					}
+					self.write(fmt!(", sizeof({}))", elem_typ_str));
+				}
+			}
+			ast::MapLiteral => {
+				let m = expr as &ast::MapLiteral;
+				let ts = m.typ.ts();
+				let val_typ = (ts.info as &ast::MapInfo).val_typ;
+				if (m.fields.len > 0) {
+					self.write(fmt!("std__Map__from_literal((std__Str[{}]){ ", m.fields.len));
+					for (i, &f in m.fields) {
+						self.gen_expr(f.key);
+						if (i < m.fields.len - 1) {
+							self.write(", ");
+						}
+					}
+					self.write(fmt!(" }, ({}[{}]){ ", val_typ.to_cstr(), m.fields.len));
+					for (i, &f in m.fields) {
+						self.gen_expr_with_cast(f.value, val_typ);
+						if (i < m.fields.len - 1) {
+							self.write(", ");
+						}
+					}
+					self.write(fmt!(" }, sizeof({}), {})", val_typ.to_cstr(), m.fields.len));
+				} else {
+	                self.write(fmt!("std__Map__new(sizeof({}))", val_typ.to_cstr()));
+				}
+			}
+			ast::StructLiteral => {
+				let s = expr as &ast::StructLiteral;
+				let ts = s.typ.ts();
+				if (ts.kind == .SumType) {
+					let info = ts.info as &ast::SumTypeInfo;
+					if (info.has_default_expr) {
+						self.gen_expr_with_cast(info.default_expr, ast::Type::new(ts));
+					} else {
+						self.write(fmt!("(({}){0})", ts.gname));
+					}
+				} else {
+					self.write("(");
+					if (ts.info is ast::StructInfo) {
+						let info = ts.info as &ast::StructInfo;
+						if (info.is_extern and !info.is_typedef) {
+							self.write("struct ");
+						}
+					}
+					self.write(ts.gname);
+					self.writeln("){");
+					self.indent++;
+					let mut fields = map<str, bool>::new();
+					if (ts.info is ast::StructInfo) {
+						if (s.has_base_init) {
+							self.write(".base = ");
+							self.gen_expr(s.base_init);
+							self.writeln(",");
+						} elif (let base_ts = (ts.info as &ast::StructInfo).base_ts()) {
+							// init inherited fields ;)
+							self.init_inherited_fields(base_ts);
+						}
+					}
+					for (&f in s.fields) {
+						self.write(fmt!(".{} = ", self.escape_c_name(f.name)));
+						self.gen_expr_with_cast(f.expr, f.expected_type);
+						self.writeln(", ");
+						fields[f.name] = true;
+					}
+					if (ts.kind != .Union) {
+						for (&f in ts.fields) {
+							if (!fields[f.name]) {
+								self.write(fmt!(".{} = ", self.escape_c_name(f.name)));
+								if (s.has_update_expr) {
+									self.gen_expr(s.update_expr);
+									self.write("." + self.escape_c_name(f.name));
+								} elif (f.has_default_expr) {
+									self.gen_expr_with_cast(f.default_expr, f.typ);
+								} else {
+									self.default_value(f.typ);
+								}
+								self.writeln(", ");
+							}
+						}
+					}
+					self.indent--;
+					self.write("}");
+				}
+			}
+			ast::BaseExpr => {
+				self.write("base");
+			}
+			ast::SelfExpr => {
+				self.write("self");
+			}
+			ast::Ident => {
+				let i = expr as &ast::Ident;
+				if (i.resolved) {
+					if (i.is_obj) {
+						self.write(self.escape_c_name(i.name));
+					} else {
+						let m = i.sym.module().replace("::", "__");
+						if (m.len > 0) {
+							self.write(fmt!("{}__{}", m, i.name));
+						} else {
+							self.write(i.name);
+						}
+					}
+				}
+			}
+			ast::SelectorExpr => {
+				let s = expr as &ast::SelectorExpr;
+				let ts = s.left_typ.ts();
+				let name = self.escape_c_name(s.field_name);
+				switch (ts.kind) {
+					.Array => {
+						if (s.field_name == "len") {
+							self.write((ts.info as &ast::ArrayInfo).size.to_str());
+						}
+					}
+					.BoxT => {
+						if (s.require_cast) {
+							self.box_inherit(s.left, s.cast_to_type);
+							self.write(fmt!("->{}", name));
+						} else {
+							self.gen_expr(s.left);
+							self.write("->" + name);
+						}
+					}
+					else => {
+						if (s.require_cast) {
+							self.write("CAST((");
+							if (s.left_typ is ast::Reference) {
+								self.gen_expr(s.left);
+							} else {
+								self.ref(s.left);
+							}
+							self.write(fmt!("), {})->", s.cast_to_type.to_cstr()));
+							self.write(name);
+						} else {
+							self.gen_expr(s.left);
+							switch (s.left_typ) is {
+								ast::Reference, ast::Pointer, ast::Optional => self.write("->");
+								else => self.write(".");
+							}
+							self.write(name);
+						}
+					}
+				}
+			}
+			ast::PathExpr => {
+				let p = expr as &ast::PathExpr;
+				if (!(p.left is ast::Ident and (p.left as &ast::Ident).name == "C")) {
+					if (p.is_associated) {
+						self.write(p.typ.ts().gname + "__");
+					} else {
+						self.write(p.left_info.module().replace("::", "__"));
+						self.write("__");
+					}
+				}
+				self.write(p.field_name);
+			}
+			ast::ParExpr => {
+				let p = expr as &ast::ParExpr;
+				self.write("(");
+				self.gen_expr(p.expr);
+				self.write(")");
+			}
+			ast::DotEnumExpr => {
+				let de = expr as &ast::DotEnumExpr;
+				self.write(fmt!("{}__{}", de.typ.ts().gname, de.field));
+			}
+			ast::CastExpr => {
+				let c = expr as &ast::CastExpr;
+				let ty = c.expr.typ();
+				let ts = ty.ts();
+				let ts2 = c.typ.ts();
+				if (ts.kind == .SumType or ts2.kind == .SumType) {
+					self.gen_expr_with_cast(c.expr, c.typ);
+				} else {
+					if (c.is_upcast) {
+						if (ts.kind == .BoxT) {
+							let gname = (ts.info as &ast::BoxInfo).elem_typ.ts().gname;
+							self.write(fmt!("({}*)_upcast_{}(", ts2.gname, ts2.gname));
+							self.gen_expr(c.expr);
+							self.write(fmt!(", {})", gname.hash()));
+						} else {
+							self.write(fmt!("_upcast_{}(", ts2.gname));
+							if (ty !is ast::Reference) {
+								self.ref(c.expr);
+							} else {
+								self.gen_expr(c.expr);
+							}
+							self.write(fmt!(", {})", ty.basic_hash()));
+						}
+					} elif (c.is_downcast) {
+						if (ts.kind == .BoxT) {
+							let gname = (ts.info as &ast::BoxInfo).elem_typ.ts().gname;
+							self.write(fmt!("({}*)_downcast_{}(", ts2.gname, gname));
+							self.gen_expr(c.expr);
+						} else {
+							self.write(fmt!("({}*)_downcast_{}(", ts2.gname, ts.gname));
+							if (ty !is ast::Reference) {
+								self.ref(c.expr);
+							} else {
+								self.gen_expr(c.expr);
+							}
+						}
+						self.write(fmt!(", {})", c.typ.basic_hash()));
+					} else {
+						self.write("CAST(");
+						self.gen_expr(c.expr);
+						self.write(fmt!(", {})", c.typ.to_cstr()));
+					}
+				}
+			}
+			ast::IndirectExpr => {
+				self.write("(*(");
+				self.gen_expr(cast(expr, &ast::IndirectExpr).expr);
+				self.write("))");
+			}
+			ast::NullCoalescing => {
+				let n = expr as &ast::NullCoalescing;
+				let ntyp = n.expr.typ();
+				let tmp = self.mktmp();
+				let l = self.go_before_stmt();
+				self.write(fmt!("{} {} = ", ntyp.to_cstr(), tmp));
+				self.gen_expr(n.expr);
+				self.writeln(";");
+				self.write(l);
+				self.write(fmt!("({} != NULL)? ", tmp));
+				if (n.typ !is ast::Reference) {
+					self.write("*");
+				}
+				self.write(fmt!("{} : ", tmp));
+				self.gen_expr(n.default_expr);
+			}
+			ast::NullCheckExpr => {
+				let n = expr as &ast::NullCheckExpr;
+				let ntyp = n.expr.typ().parent();
+				let is_ptr = ntyp.is_pointer() or ntyp is ast::Reference;
+				if (!is_ptr) {
+					self.write("(*");
+				}
+				self.write("CAST(std__null_check(");
+				self.gen_expr(n.expr);
+				let msg = utils::smart_quote(fmt!("null check: `{}` is null", n.expr));
+				self.write(fmt!(", _SLIT(\"{}\")), {}", msg, n.typ.to_cstr()));
+				if (!is_ptr) {
+					self.write("*");
+				}
+				self.write(")");
+				if (!is_ptr) {
+					self.write(")");
+				}
+			}
+			ast::UnaryExpr => {
+				let u = expr as &ast::UnaryExpr;
+				if (u.op == .Amp) {
+					self.ref(u.right);
+				} else {
+					self.write(u.op.to_str());
+					self.gen_expr(u.right);
+				}
+			}
+			ast::BinaryExpr => {
+				let b = expr as &ast::BinaryExpr;
+				let left_typ = b.left.typ();
+				let right_typ = b.right.typ();
+				let ts = left_typ.ts();
+				let rts = right_typ.ts();
+				switch (b.op) {
+					.KeyIn, .KeyNotIn => {
+						if (rts.kind == .Map) {
+							if (b.op == .KeyNotIn) {
+								self.write("!");
+							}
+							self.write("std__Map__exists(");
+							self.ref(b.right);
+							self.write(", ");
+							self.gen_expr(b.left);
+							self.write(")");
+						} else {
+							let op = if (b.op == .KeyNotIn) "!" else "";
+							if (b.right is ast::ArrayLiteral) {
+								let lit = (b.right as &ast::ArrayLiteral);
+								self.write(fmt!("{}(", op));
+								for (i, e in lit.elems) {
+									if (ts.kind == .Str) {
+										self.write("(std__Str__eq(");
+										self.gen_expr(b.left);
+										self.write(", ");
+										self.gen_expr(e);
+										self.write(")");
+									} elif (left_typ.is_primitive() or ts.kind == .Enum) {
+										self.write("(");
+										self.gen_expr(b.left);
+										self.write(" == ");
+										self.gen_expr(e);
+									} else {
+										self.write(fmt!("({}__eq(", ts.gname));
+										self.gen_expr(b.left);
+										self.write(", ");
+										self.gen_expr(e);
+										self.write(")");
+									}
+									if (i < lit.elems.len - 1) {
+										self.write(") || ");
+									}
+								}
+								self.write(")");
+							} else {
+								self.gen_array_contains_fn(left_typ, rts.gname);
+								self.write(fmt!("{}__array_contains__{}(", op, ts.gname));
+								self.gen_expr(b.right);
+								self.write(", ");
+								self.gen_expr(b.left);
+							}
+							self.write(")");
+						}
+					}
+					.KeyIs, .KeyNotIs => {
+						let t = b.right.typ();
+						let op = if (b.op == .KeyNotIs) "!" else "=";
+						if (ts.kind in vec[ast::TypeKind]{.SumType, .Struct}) {
+							let dot = if (left_typ is ast::Reference) "->" else ".";
+							self.gen_expr(b.left);
+							self.write(fmt!("{}_typ {}= {}", dot, op, t.basic_hash()));
+						} elif (ts.kind == .BoxT) {
+							self.gen_expr(b.left);
+							self.write(fmt!("->_typ {}= {}", op, t.basic_hash()));
+						}
+					}
+					else => {
+						if (left_typ.eq(self.table.str_t)) {
+							let op = if (b.op == .Eq) "eq" else if (b.op == .Ne) "neq" else "add";
+							self.write(fmt!("std__Str__{}(", op));
+							self.gen_expr(b.left);
+							self.write(", ");
+							self.gen_expr(b.right);
+							self.write(")");
+						} else {
+							if (b.op in vec[Kind]{ .KeyAnd, .KeyOr }) {
+								self.gen_expr(b.left);
+								self.write(if (b.op == .KeyAnd) " && " else " || ");
+								self.gen_expr(b.right);
+							} else {
+								if (left_typ.is_primitive() or left_typ.is_pointer()
+									or left_typ is ast::Reference or ts.kind == .Enum
+									or left_typ is ast::Optional
+									or left_typ.eq(self.table.null_t)) {
+									let req_paren = b.op in vec[Kind]{ .Amp, .Pipe };
+									if (req_paren) self.write("(");
+									self.gen_expr(b.left);
+									self.write(fmt!(" {} ", b.op.to_str()));
+									self.gen_expr(b.right);
+									if (req_paren) self.write(")");
+								} else {
+									self.write(fmt!("{}", ts.gname));
+									switch (b.op) {
+										.Eq => self.write("__eq(");
+										.Ne => self.write("__ne(");
+										else => {}
+									}
+									self.gen_expr(b.left);
+									self.write(", ");
+									self.gen_expr(b.right);
+									self.write(")");
+								}
+							}
+						}
+					}
+				}
+			}
+			ast::TernaryExpr => {
+				let t = expr as &ast::TernaryExpr;
+				if (t.is_comptime) {
+					if (t.comptime_result) {
+						self.gen_expr(t.left);
+					} else {
+						self.gen_expr(t.right);
+					}
+				} else {
+					self.write("((");
+					self.gen_expr(t.cond);
+					self.write(")? (");
+					self.gen_expr(t.left);
+					self.write(") : (");
+					self.gen_expr(t.right);
+					self.write("))");
+				}
+			}
+			ast::PostfixExpr => {
+				let p = expr as &ast::PostfixExpr;
+				self.gen_expr(p.left);
+				self.write(p.op.to_str());
+			}
+			ast::IndexExpr => {
+				let i = expr as &ast::IndexExpr;
+				let ts = i.left_typ.ts();
+				switch (ts.kind) {
+					.Array => {
+						let info = ts.info as &ast::ArrayInfo;
+						if (i.index is ast::RangeExpr){
+							let range = i.index as &ast::RangeExpr;
+							self.write("std__Vec__slice(std__Vec__from_c_array(");
+							self.gen_expr(i.left);
+							self.write(", ");
+							self.gen_expr(info.size);
+							self.write(", ");
+							self.gen_expr(info.size);
+							self.write(fmt!(", sizeof({})), ", info.elem_typ.to_cstr()));
+							if (range.has_start) {
+								self.gen_expr(range.start);
+							} else {
+								self.write("0");
+							}
+							self.write(", ");
+							if (range.has_end) {
+								self.gen_expr(range.end);
+							} else {
+								self.gen_expr(info.size);
+							}
+							self.write(")");
+						} elif (!self.prefs.no_std) {
+							// check valid index
+							self.gen_expr(i.left);
+							self.write("[std__check_fixed_index(");
+							self.gen_expr(i.index);
+							self.write(", ");
+							self.gen_expr(info.size);
+							self.write(")]");
+						} else {
+							self.gen_expr(i.left);
+							self.write("[");
+							self.gen_expr(i.index);
+							self.write("]");
+						}
+					}
+					.Vector => {
+						if (i.index is ast::RangeExpr) {
+							let range = i.index as &ast::RangeExpr;
+							let normal_slice = range.has_start and range.has_end;
+							if (normal_slice) {
+								self.write("std__Vec__slice(");
+							} elif (range.has_start) {
+								self.write("std__Vec__left(");
+							} elif (range.has_end) {
+								self.write("std__Vec__right(");
+							} else {
+								self.write("std__Vec__full_slice(");
+							}
+							self.gen_expr(i.left);
+							if (normal_slice) {
+								self.write(", ");
+								self.gen_expr(range.start);
+								self.write(", ");
+								self.gen_expr(range.end);
+							} elif (range.has_start) {
+								self.write(", ");
+								self.gen_expr(range.start);
+							} elif (range.has_end) {
+								self.write(", ");
+								self.gen_expr(range.end);
+							}
+							self.write(")");
+						} else {
+							self.write("(*CAST(std__Vec__get(");
+							self.gen_expr(i.left);
+							self.write(", ");
+							self.gen_expr(i.index);
+							let elem_typ = (ts.info as &ast::VectorInfo).elem_typ;
+							self.write(fmt!("), {}*))", elem_typ.to_cstr()));
+						}
+					}
+					.Slice => {
+						if (i.index is ast::RangeExpr) {
+							let range = i.index as &ast::RangeExpr;
+							let normal_slice = range.has_start and range.has_end;
+							if (normal_slice) {
+								self.write("std__Slice__slice(");
+							} elif (range.has_start) {
+								self.write("std__Slice__left(");
+							} elif (range.has_end) {
+								self.write("std__Slice__right(");
+							}
+							self.gen_expr(i.left);
+							self.write(", ");
+							if (normal_slice) {
+								self.gen_expr(range.start);
+								self.write(", ");
+								self.gen_expr(range.end);
+							} elif (range.has_start) {
+								self.gen_expr(range.start);
+							} elif (range.has_end) {
+								self.gen_expr(range.end);
+							}
+							self.write(")");
+						} else {
+							self.write("(*CAST(std__Slice__get(");
+							self.gen_expr(i.left);
+							self.write(", ");
+							self.gen_expr(i.index);
+							let elem_typ = (ts.info as &ast::SliceInfo).elem_typ;
+							self.write(fmt!("), {}*))", elem_typ.to_cstr()));
+						}
+					}
+					.Map => {
+						let val_typ = (ts.info as &ast::MapInfo).val_typ;
+						let tstr = val_typ.to_cstr();
+						self.write("*CAST(std__Map__get_or(");
+						self.ref(i.left);
+						self.write(", ");
+						self.gen_expr(i.index);
+						self.write(fmt!(", ADDR({}, (", tstr));
+						self.default_value(val_typ);
+						self.write(fmt!("))), {}*)", tstr));
+					}
+					.Str if (i.left_typ !is ast::Pointer) => {
+						if (i.index is ast::RangeExpr) {
+							let range = i.index as &ast::RangeExpr;
+							let normal_slice = range.has_start and range.has_end;
+							if (normal_slice) {
+								self.write("std__Str__substr(");
+							} elif (range.has_start) {
+								self.write("std__Str__left(");
+							} elif (range.has_end) {
+								self.write("std__Str__right(");
+							}
+							self.gen_expr(i.left);
+							self.write(", ");
+							if (normal_slice) {
+								self.gen_expr(range.start);
+								self.write(", ");
+								self.gen_expr(range.end);
+							} elif (range.has_start) {
+								self.gen_expr(range.start);
+							} elif (range.has_end) {
+								self.gen_expr(range.end);
+							}
+							self.write(")");
+						} else {
+							self.write("std__Str__at(");
+							self.gen_expr(i.left);
+							self.write(", ");
+							self.gen_expr(i.index);
+							self.write(")");
+						}
+					}
+					else => {
+						self.gen_expr(i.left);
+						self.write("[");
+						self.gen_expr(i.index);
+						self.write("]");
+					}
+				}
+			}
+			ast::CallExpr => self.gen_call_expr(expr as &ast::CallExpr);
+			ast::BuiltinCallExpr => self.gen_builtin_call(expr as &ast::BuiltinCallExpr);
+			ast::TryExpr => self.gen_try_expr(expr as &ast::TryExpr);
+			else => self.write("/* unknown expression detected */");
+		}
+	}
+
+	fn gen_call_expr(mut &self, expr: &ast::CallExpr) {
+		if (expr.info.is_extern) {
+			if (let attr = expr.info.attrs.get("ccode")) {
+				if (let n = attr.get("cname")) {
+					self.write(fmt!("{}(", (n.expr as &ast::StringLiteral).lit));
+				}
+			} else {
+				self.write(fmt!("{}(", expr.info.name));
+			}
+		} elif (expr.info.is_method or expr.info.is_associated) {
+			let is_virtual_or_abstract = expr.info.attrs.contains("virtual")
+				or expr.info.attrs.contains("abstract");
+			let ts = expr.info.rec_typ.ts();
+			if (!is_virtual_or_abstract) {
+				self.write(ts.gname);
+				self.write(fmt!("__{}(", expr.info.name));
+			}
+			if (expr.info.is_method) { // `self`
+				let ss = (expr.left as &ast::SelectorExpr);
+				let rec = ss.left.clear();
+				let rec_typ = rec.typ();
+				let rec_ts = rec_typ.ts();
+				if (is_virtual_or_abstract) {
+					let original_ts = expr.info.rec_typ.ts();
+					if (rec is ast::BaseExpr or !original_ts.is_base) {
+						self.write(
+							fmt!("VTBL_BASE({})->{}(", original_ts.gname,
+							self.escape_c_name(ss.field_name))
+						);
+					} else {
+						self.write(fmt!("VTBL({}, ", original_ts.gname));
+						if (rec_ts.kind == .BoxT) {
+							self.box_inherit(rec, ss.cast_to_type);
+						} else {
+							if (ss.require_cast) {
+								self.write("CAST((");
+							}
+							if (rec_typ is ast::Reference) {
+								self.gen_expr(rec);
+							} else {
+								self.write("(");
+								self.ref(rec);
+								self.write(")");
+							}
+							if (ss.require_cast) {
+								self.write(fmt!("), {})", ss.cast_to_type.to_cstr()));
+							}
+						}
+						self.write(fmt!(")->{}(", self.escape_c_name(ss.field_name)));
+					}
+				}
+				if (ss.require_cast) {
+					self.write(fmt!("_upcast_{}(", ss.cast_to_type.ts().gname));
+				} elif (expr.info.attrs.contains("override")) {
+					let mut base_ts = (ts.info as &ast::StructInfo).base_ts();
+					while (base_ts != null) {
+						if (base_ts.?.has_method(expr.info.name)) {
+							self.write(fmt!("_upcast_{}(", base_ts.?.gname));
+							break;
+						}
+						base_ts = (base_ts.?.info as &ast::StructInfo).base_ts();
+					}
+				}
+				self.receiver(expr.info.rec_typ, rec);
+				if (ss.require_cast or expr.info.attrs.contains("override")) {
+					if (rec_ts.kind == .BoxT) {
+						self.write(
+							fmt!(
+								", {})",
+								(rec_ts.info as &ast::BoxInfo).elem_typ.basic_hash()
+							)
+						);
+					} else {
+						self.write(fmt!(", {})", rec.typ().basic_hash()));
+					}
+				}
+				if (expr.args.len > 0) {
+					self.write(", ");
+				}
+			}
+		} elif (expr.info.module.len > 0) {
+			self.write(expr.info.module.replace("::", "__"));
+			self.write(fmt!("__{}(", expr.info.name));
+		} else {
+			self.write(fmt!("{}(", self.escape_c_name(expr.info.name)));
+		}
+		let real_args_len = expr.info.real_args_len();
+		for (i, &arg in expr.args) {
+			if (expr.info.is_variadic and i == real_args_len) {
+				break;
+			}
+			let carg = expr.info.args[i];
+			self.gen_expr_with_cast(arg.expr, carg.typ);
+			if (i < expr.args.len - 1 or expr.info.is_variadic) {
+				self.write(", ");
+			}
+		}
+		if (expr.info.is_variadic) {
+			let args_nr = expr.info.args.len - 1;
+			let variadic_count = expr.args.len - args_nr;
+			if (expr.info.is_extern) {
+				for (i in (args_nr + 1)..expr.args.len) {
+					self.gen_expr(expr.args[i].expr);
+					if (i < expr.args.len - 1) {
+						self.write(", ");
+					}
+				}
+			} else {
+				let var_arg = expr.info.args[expr.info.args.len - 1];
+				if (variadic_count == 1 and
+					expr.args[expr.args.len - 1].expr.typ() is ast::Variadic) {
+					self.gen_expr(expr.args[expr.args.len - 1].expr);
+				} else {
+					let elem_type = var_arg.typ.parent();
+					let elem_typ = elem_type.to_cstr();
+					if (variadic_count > 0) {
+						self.write(
+							fmt!("std__Vec__from_c_array(({}[{}]){ ", elem_typ, variadic_count)
+						);
+						for (i in args_nr..expr.args.len) {
+							self.gen_expr_with_cast(expr.args[i].expr, elem_type);
+							if (i < expr.args.len - 1) {
+								self.write(", ");
+							}
+						}
+						self.write(
+							fmt!(" }, {}, {}, sizeof({}))", variadic_count, variadic_count,
+							elem_typ)
+						);
+					} else {
+						self.write(fmt!("std__Vec__new(0, 0, sizeof({}))", elem_typ));
+					}
+				}
+			}
+		}
+		self.write(")");
+	}
+
+	fn gen_try_expr(mut &self, expr: &ast::TryExpr) {
+		let styp = expr.typ.to_cstr();
+		let is_void = expr.typ.eq(ast::VOID_T);
+		let tmp = self.mktmp();
+		let tmp2 = if (is_void or expr.has_orelse) "" else self.mktmp();
+		let l = if (is_void) "" else self.go_before_stmt();
+		self.empty_line = true;
+		self.write(fmt!("{} {} = ", expr.expr.typ().to_cstr(), tmp));
+		self.gen_expr(expr.expr);
+		self.writeln(";");
+		if (!(is_void or expr.has_orelse)) {
+			self.writeln(fmt!("{} {};", styp, tmp2));
+		}
+		switch {
+			expr.has_orelse => {
+				self.empty_line = true;
+				self.write(l);
+				self.write(fmt!("(({}.ok)? ({}.value) : (", tmp, tmp));
+				self.gen_expr(expr.orelse_val);
+				self.write("))");
+			}
+			expr.has_catch => {
+				if (is_void) {
+					self.writeln(fmt!("if (!{}.ok) {", tmp));
+					self.indent++;
+				} else {
+					self.writeln(fmt!("if ({}.ok) {", tmp));
+					self.indent++;
+					self.writeln(fmt!("{} = {}.value;", tmp2, tmp));
+					self.indent--;
+					self.writeln("} else {");
+					self.indent++;
+				}
+				self.writeln(fmt!("std__Error err = {}.err;", tmp));
+				self.gen_stmt(expr.catcher);
+				self.indent--;
+				self.writeln("}");
+				self.empty_line = true;
+				self.write(l);
+				self.write(tmp2);
+			}
+			else => {
+				self.writeln(fmt!("if (!{}.ok) {", tmp));
+				self.indent++;
+				if (self.func.is_main) {
+					self.writeln(fmt!("std__Error__panic(&{}.err);", tmp));
+				} else {
+					self.writeln(
+						fmt!("return ({}){.err={}.err, .ok=false};",
+						self.func.ret_typ.to_cstr(), tmp)
+					);
+				}
+				self.indent--;
+				self.writeln("}");
+				if (!is_void) {
+					self.empty_line = true;
+					self.write(l);
+					self.write(fmt!("{}.value", tmp));
+				}
+			}
+		}
+	}
+
+	fn gen_array_contains_fn(mut &self, typ: ast::Type, arrname: str) {
+		let mut ts = typ.ts();
+		if (!ts.has_arr_contains_fn) {
+			let mut sb = strings::Builder::new();
+			self.helpers_definitions.writeln(
+				fmt!("bool __array_contains__{}({} arr, {} val);", ts.gname, arrname, ts.gname)
+			);
+			sb.writeln(
+				fmt!("bool __array_contains__{}({} arr, {} val) {", ts.gname, arrname, ts.gname)
+			);
+			sb.writeln("    bool res = false;");
+			sb.writeln("    for (usize i = 0; i < arr.len; ++i) {");
+			sb.writeln(
+				fmt!("        {} v = CAST(arr.data, {}*)[i];", ts.gname, ts.gname)
+			);
+			if (typ.is_primitive() or typ is ast::Reference or typ.is_pointer()
+				or ts.kind == .Enum) {
+				sb.writeln("        if (v == val) res = true;");
+			} else {
+				sb.writeln(fmt!("        if ({}__eq(v, val)) res = true;", ts.gname));
+			}
+			sb.writeln("    }");
+			sb.writeln("    return res;");
+			sb.writeln("}");
+			self.helpers.write_str(sb.to_str());
+			ts.has_arr_contains_fn = true;
+		}
+	}
+}

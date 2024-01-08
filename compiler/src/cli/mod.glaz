@@ -1,0 +1,149 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::console::eprintln;
+
+use src::{ast, pref, utils, parser, checker, resolver, codegen};
+
+pub struct CLI {
+	mut source_files: vec[Box<ast::SourceFile>],
+	mut table: Box<ast::Table>,
+	mut prefs: Box<pref::Preferences>,
+	mut resolver: Box<resolver::Resolver>,
+	mut checker: Box<checker::Checker>,
+	mut codegen: Box<codegen::CodeGen>
+}
+
+impl CLI {
+	pub fn new(args: vec[str]) CLI {
+		let table = ast::Table::new();
+		let prefs = pref::Preferences::new(args);
+		return CLI{
+			table: table,
+			prefs: prefs,
+			resolver: resolver::Resolver::new(&table, &prefs),
+			checker: checker::Checker::new(&table, &prefs),
+			codegen: codegen::CodeGen::new(&table, &prefs, prefs.backend)
+		};
+	}
+
+	pub fn start(mut &self) {
+		// we register the native types
+		self.table.register_builtin_types();
+
+		// we register the C and `src` module
+		self.table.register_c_mod();
+		self.register_src_module();
+
+		self.parse_files();
+		if (self.table.err_c > 0) {
+			self.abort_with_error();
+		}
+
+		if (!self.prefs.check_syntax) {
+			self.resolver.resolve_files(self.source_files);
+			if (self.table.err_c > 0) {
+				self.abort_with_error();
+			}
+
+			self.checker.check_files(self.source_files);
+			if (self.table.err_c > 0) {
+				self.abort_with_error();
+			}
+
+			if (!self.prefs.check) {
+				self.codegen.gen_files(self.source_files);
+				if (self.prefs.build_mode == .Library) {
+					self.codegen.generate_library();
+				} else {
+					self.codegen.generate_executable();
+				}
+			}
+		}
+	}
+
+	@[inline]
+	fn register_src_module(mut &self) {
+		try self.table.gmod.add(ast::Module{
+			name: self.prefs.src_name,
+			scope: ast::Scope::new()
+		}) catch utils::compiler_error("CLI::register_src_module: unexpected bug");
+	}
+
+	fn parse_files(mut &self) {
+		self.source_files = parser::Parser::parse_files(
+			&self.prefs, &self.table, self.prefs.source_files
+		);
+		self.reorder_files();
+	}
+
+	fn reorder_files(mut &self) {
+		let g = self.import_graph();
+		let deps_resolved = g.resolve();
+
+		self.vlog("=------= resolved dependencies graph =------=");
+		self.vlog(deps_resolved.display());
+		self.vlog("=-------------------------------------------=");
+
+		let cycles = deps_resolved.display_cycles();
+		if (cycles.len > 1) {
+			utils::compiler_error(
+				"import cycle detected between the following modules:\n" + cycles
+			);
+		}
+
+		let mut mods = vec[str]::new();
+		for (&node in deps_resolved.nodes) {
+			push!(mods, node.name);
+		}
+
+		self.vlog("=---------= imported modules =---------=");
+		self.vlog(mods.join());
+		self.vlog("=--------------------------------------=");
+
+		let mut reordered_source_files = vec[Box<ast::SourceFile>]::new();
+		for (m in mods) {
+			for (i in 0..self.source_files.len) {
+				let sf = self.source_files[i];
+				if (m == sf.module) {
+					push!(reordered_source_files, sf);
+				}
+			}
+		}
+		self.source_files = reordered_source_files;
+	}
+
+	fn import_graph(&self) Box<utils::DepGraph> {
+		let mut g = utils::DepGraph::new();
+		for (&sf in self.source_files) {
+			let mut deps = vec[str]::new();
+			if (!sf.module.starts_with("std")) {
+				push!(deps, "std");
+			}
+			for (&i in sf.imports) {
+				if (i.mods == sf.module) {
+					continue;
+				}
+				push!(deps, i.mods);
+			}
+			g.add(sf.module, deps);
+		}
+		return g;
+	}
+
+	fn vlog(&self, msg: str) {
+		if (self.prefs.is_verbose) {
+			eprintln(fmt!(">> {}", msg));
+		}
+	}
+
+	@[inline]
+	fn abort_with_error(&self) {
+		utils::compiler_error(if (self.table.err_c == 1) fmt!(
+			"could not compile `{}`, aborting due to previous error.", self.prefs.src_name
+		) else fmt!(
+			"could not compile `{}`, aborting due to {} previous errors.",
+			self.prefs.src_name, self.table.err_c
+		));
+	}
+}

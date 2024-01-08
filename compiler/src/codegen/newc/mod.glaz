@@ -1,0 +1,169 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+use src::codegen::gir;
+use src::{ast, pref, utils};
+
+/*
+pub const C_RESERVED_WORDS: vec[str] = vec[str]{
+	"break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum",
+	"extern", "float", "for", "goto", "if", "inline", "int", "link", "long", "register",
+	"restrict", "return", "short", "signed", "sizeof", "static", "str", "struct", "switch",
+	"typedef", "union", "unix", "unsigned", "void", "volatile", "while", "true", "false"
+};
+*/
+
+pub struct Gen {
+	table: &ast::Table,
+	prefs: &pref::Preferences,
+
+	mut indent: i32,
+	mut empty_line: bool,
+
+	mut chash_definitions: strings::Builder,
+	mut typedefs: strings::Builder,
+	mut type_definitions: strings::Builder,
+	mut result_definitions: strings::Builder,
+	mut const_decls: strings::Builder,
+	mut funcs_definitions: strings::Builder,
+	mut consts_inits: strings::Builder,
+	mut out: strings::Builder
+}
+
+impl Gen {
+	@[inline]
+	pub fn new(table: &ast::Table, prefs: &pref::Preferences) Box<Gen> {
+		return box!(Gen{
+			table: table,
+			prefs: prefs,
+			chash_definitions: strings::Builder::new(500),
+			typedefs: strings::Builder::new(500),
+			type_definitions: strings::Builder::new(500),
+			result_definitions: strings::Builder::new(500),
+			const_decls: strings::Builder::new(500),
+			funcs_definitions: strings::Builder::new(500),
+			consts_inits: strings::Builder::new(500),
+			out: strings::Builder::new(500)
+		});
+	}
+
+	pub fn get_output(mut &self) str {
+		let mut b = strings::Builder::new(100_000);
+
+		b.write_str(HEADER);
+		if (!self.prefs.is_release) {
+			b.write_str(G_BREAKPOINT);
+		}
+		b.writeln(self.chash_definitions.to_str());
+		b.writeln(self.typedefs.to_str());
+		b.writeln(self.type_definitions.to_str());
+		b.writeln(self.result_definitions.to_str());
+		b.writeln(self.const_decls.to_str());
+		b.write_str(self.out.to_str());
+
+		let res = b.to_str();
+		unsafe {
+			b.drop();
+		}
+		return res;
+	}
+
+	fn write(mut &self, s: str) {
+		if (self.indent > 0 and self.empty_line) {
+			self.out.write_str(utils::tabs(self.indent));
+		}
+		self.out.write_str(s);
+		self.empty_line = false;
+	}
+
+	fn writeln(mut &self, s: str = "") {
+		if (self.indent > 0 and self.empty_line) {
+			self.out.write_str(utils::tabs(self.indent));
+		}
+		self.out.writeln(s);
+		self.empty_line = true;
+	}
+
+	pub fn gen_decls(mut &self, decls: vec[gir::Decl]) {
+		for (decl in decls) {
+			switch (decl) is {
+				gir::PreprocessorLine => self.chash_definitions.writeln(
+					"#" + cast(decl, &gir::PreprocessorLine).line
+				);
+				gir::Func => {
+					let f = cast(decl, &gir::Func);
+					if (f.is_noreturn) {
+						self.write("GLAZ_NORETURN ");
+					}
+					if (f.is_inline) {
+						self.write("inline ");
+					}
+					self.write(f.ret_typ.to_cstr());
+					self.write(" ");
+					self.write(f.name);
+					self.write("(");
+					self.writeln(") {");
+					self.indent++;
+					self.gen_stmts(f.stmts);
+					self.indent--;
+					self.writeln("}");
+				}
+				else => {}
+			}
+		}
+	}
+
+	fn gen_stmts(mut &self, stmts: vec[gir::Stmt]) {
+		for (stmt in stmts) {
+			switch (stmt) is {
+				gir::Label => {
+					self.indent--;
+					self.writeln(fmt!("{}: { }", cast(stmt, &gir::Label).name));
+					self.indent++;
+				}
+				gir::Assign => {}
+				gir::ExprStmt => {
+					self.gen_expr(cast(stmt, &gir::ExprStmt).expr);
+					self.writeln(";");
+				}
+			}
+		}
+	}
+
+	fn gen_expr(mut &self, expr: gir::Expr) {
+		switch (expr) is {
+			ast::NullLiteral => self.write("NULL");
+			ast::BoolLiteral => self.write(
+				cast(expr, &ast::BoolLiteral).lit.to_str()
+			);
+			ast::IntegerLiteral => self.write(
+				cast(expr, &ast::IntegerLiteral).lit.to_str()
+			);
+			ast::FloatLiteral => self.write(
+				cast(expr, &ast::FloatLiteral).lit.to_str()
+			);
+			ast::CharLiteral => {
+				let c = expr as &ast::CharLiteral;
+				if (c.is_byte) {
+					self.write(fmt!("'{}'", c.lit));
+				} else {
+					self.write(fmt!("L'{}'", c.lit));
+				}
+			}
+			ast::StringLiteral => {
+				let s = expr as &ast::StringLiteral;
+				let lit = utils::smart_quote(s.lit, s.is_raw);
+				if (s.is_cstr) {
+					self.write(fmt!("\"{}\"", lit));
+				} else {
+					self.write(fmt!("_SLIT(\"{}\")", lit));
+				}
+			}
+			gir::Ident => self.write(cast(expr, &gir::Ident).name);
+			ast::TypeNode => self.write(cast(expr, &ast::TypeNode).typ.to_cstr());
+			gir::Inst => {}
+		}
+	}
+}

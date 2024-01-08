@@ -1,0 +1,71 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::{mem, path};
+
+@[noinit]
+pub struct Dir {}
+
+impl Dir {
+	/// Creates a new directory with the specified path.
+	pub fn create(path: str) ! {
+		let apath = path::realpath(path);
+		if (unsafe { C::mkdir(cast(apath.cstr, charptr), 511) == -1 }) {
+			raise fmt!(
+				"Dir::create: failed to create '{}': {}",
+				path, src::strerr_from_errno()
+			);
+		}
+	}
+
+	/// Removes a specified directory.
+	pub fn remove(path: str) ! {
+		if (unsafe { C::rmdir(cast(path.cstr, charptr)) == -1 }) {
+			raise fmt!(
+				"Dir::remove: failed to remove '{}': {}",
+				path, src::strerr_from_errno()
+			);
+		}
+	}
+
+	/// Changes the current working directory to the new directory in `path`.
+	@[inline]
+	pub fn set_current(path: str) {
+		unsafe { _ = C::chdir(cast(path.cstr, charptr)); }
+	}
+
+	/// Returns the absolute path of the current directory.
+	pub fn get_current() str {
+		let mut buf = unsafe { cast(mem::calloc(path::MAX_PATH_LEN), charptr) };
+		if (unsafe { C::getcwd(buf, path::MAX_PATH_LEN) == 0 }) unsafe {
+			mem::free(buf);
+			return "";
+		}
+		let res = str::new_clone(buf);
+		unsafe { mem::free(buf); }
+		return res;
+	}
+
+	pub fn walk(path: str) !vec[str] {
+		let dir = unsafe { C::opendir(cast(path.cstr, charptr)) };
+		if (dir == null) {
+			raise fmt!("walk: couldn't open '{}'", path);
+		}
+		let mut res = vec[str]::new();
+		loop {
+			let ent = unsafe { C::readdir(dir) };
+			if (ent == null) {
+				break;
+			}
+			let bptr = unsafe { ent.*.d_name };
+			if (unsafe { bptr[0] == 0 or (bptr[0] == b'.' and bptr[1] == 0)
+				or (bptr[0] == b'.' and bptr[1] == b'.' and bptr[2] == 0) }) {
+				continue;
+			}
+			push!(res, str::new_clone2(bptr));
+		}
+
+		unsafe { _ = C::closedir(dir); }
+		return res;
+	}
+}

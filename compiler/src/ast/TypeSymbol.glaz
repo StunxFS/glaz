@@ -1,0 +1,295 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::tokens;
+
+/// The Void Type :). A good and simple type (?).
+const VOID_TS: Box<TypeSymbol> = box!(TypeSymbol{
+	name: "void",
+	gname: "void",
+	kind: .Void
+});
+
+pub const VOID_T: Type = Type::new(&VOID_TS);
+
+pub type TypeInfo = StructInfo | ArrayInfo | VectorInfo | SliceInfo | MapInfo
+	| TupleInfo | EnumInfo | AliasInfo | SumTypeInfo | BoxInfo = StructInfo{};
+
+pub struct Field {
+	pub name: str,
+	pub default_expr: Expr,
+	pub has_default_expr: bool,
+	pub is_mut: bool,
+	pub is_pub: bool,
+	pub attrs: Attrs,
+	pub typ: Type
+}
+
+pub struct TypeSymbol {
+	pub name: str,
+	pub gname: str,
+	pub kind: TypeKind,
+	pub info: TypeInfo,
+	pub mut fields: vec[Field],
+	pub mut methods: vec[Function],
+	pub mut syms: vec[Symbol], // associated methods, etc.
+	pub module: str,
+	pub pos: tokens::Position,
+	pub mut is_base: bool,
+	pub is_pub: bool,
+	pub is_copy: bool, // @[copy]
+
+	pub mut has_drop: bool,
+	pub mut has_cast_utils: bool,
+	pub mut has_virtual_or_abstracts_methods: bool,
+	pub mut has_base_cycle: bool,
+	pub mut has_arr_contains_fn: bool,
+
+	pub mut inherited_ts: vec[&TypeSymbol]
+}
+
+impl TypeSymbol {
+	pub fn add(mut &self, sym: Symbol) ! {
+		let name = sym.name();
+		if (let _ = self.find(name)) {
+			raise fmt!("the name `{}` is defined multiple times", name);
+		}
+		push!(self.syms, sym);
+	}
+
+	@[inline]
+	pub fn add_method(mut &self, m: Function) ! {
+		if (let _ = self.find_method(m.name)) {
+			raise fmt!("the method `{}` is defined multiple times", m.name);
+		}
+		push!(self.methods, m);
+	}
+
+	pub fn find_field(&self, name: str) ?&Field {
+		for (&f in self.fields) {
+			if (f.name == name) {
+				return f;
+			}
+		}
+		return null;
+	}
+
+	pub fn has_field(&self, name: str) bool {
+		if (let _ = self.find_field(name)) {
+			return true;
+		}
+		return false;
+	}
+
+	pub fn find_method(&self, name: str) ?&Function {
+		for (&m in self.methods) {
+			if (m.name == name) {
+				return m;
+			}
+		}
+		return null;
+	}
+
+	pub fn has_method(&self, name: str) bool {
+		if (let _ = self.find_method(name)) {
+			return true;
+		}
+		return false;
+	}
+
+	pub fn find(&self, name: str) ?&Symbol {
+		for (&sym in self.syms) {
+			if (sym.name() == name) {
+				return sym;
+			}
+		}
+		return null;
+	}
+
+	pub fn qualname(&self) str {
+		if (self.module.len > 0 and self.name != "str") {
+			return self.module + "::" + self.name;
+		}
+		return self.name;
+	}
+
+	pub fn collect_field_names(&self) vec[str] {
+		let mut names = vec[str]::new(0, self.fields.len);
+		for (&f in self.fields) {
+			push!(names, f.name);
+		}
+		return names;
+	}
+
+	pub fn collect_method_names(&self) vec[str] {
+		let mut names = vec[str]::new(0, self.methods.len);
+		for (&m in self.methods) {
+			push!(names, m.name);
+		}
+		return names;
+	}
+}
+
+pub enum TypeKind {
+	Placeholder,
+	Void,
+	Bool,
+	I8,
+	I16,
+	I32,
+	I64,
+	Isize,
+	U8,
+	U16,
+	U32,
+	U64,
+	Usize,
+	F32,
+	F64,
+	Rune,
+	UntypedFloat,
+	UntypedInt,
+	Charptr,
+	Rawptr,
+	Str,
+	Null,
+	Tuple,
+	Struct,
+	Union,
+	Enum,
+	Vector,
+	Array,
+	Slice,
+	Map,
+	Alias,
+	SumType,
+	BoxT
+}
+
+impl TypeKind {
+	pub fn to_str(self) str {
+		switch (self) {
+			.Placeholder => return "<placeholder>";
+			.Void => return "void";
+			.Bool => return "bool";
+			.I8 => return "i8";
+			.I16 => return "i16";
+			.I32 => return "i32";
+			.I64 => return "i64";
+			.Isize => return "isize";
+			.U8 => return "u8";
+			.U16 => return "u16";
+			.U32 => return "u32";
+			.U64 => return "u64";
+			.Usize => return "usize";
+			.F32 => return "f32";
+			.F64 => return "f64";
+			.Rune => return "rune";
+			.UntypedFloat => return "untyped float";
+			.UntypedInt => return "untyped int";
+			.Charptr => return "charptr";
+			.Rawptr => return "rawptr";
+			.Str => return "str";
+			.Null => return "null";
+			.Tuple => return "tuple";
+			.Struct => return "struct";
+			.Union => return "union";
+			.Enum => return "enum";
+			.Vector => return "vector";
+			.Array => return "array";
+			.Slice => return "slice";
+			.Map => return "map";
+			.Alias => return "type alias";
+			.SumType => return "sum type";
+			.BoxT => return "box";
+		}
+		return "";
+	}
+}
+
+pub struct StructInfo {
+	pub attrs: Attrs,
+	pub is_extern: bool,
+	pub is_typedef: bool,
+	pub is_opaque: bool,
+	pub is_union: bool,
+	pub noinit: bool,
+	pub has_base: bool,
+	pub base_expr: Expr
+}
+
+pub struct ArrayInfo {
+	pub elem_typ: Type,
+	pub size: Expr
+}
+
+pub struct VectorInfo {
+	pub elem_typ: Type
+}
+
+pub struct SliceInfo {
+	pub elem_typ: Type
+}
+
+pub struct MapInfo {
+	pub val_typ: Type
+}
+
+pub struct TupleInfo {
+	pub fields: vec[Type]
+}
+
+pub struct EnumInfo {
+	pub fields: vec[EnumField]
+}
+
+pub struct AliasInfo {
+	pub parent: Type
+}
+
+pub struct SumTypeInfo {
+	pub typs: vec[Type],
+	pub has_default_expr: bool,
+	pub default_expr: Expr
+}
+
+pub struct BoxInfo {
+	pub elem_typ: Type
+}
+
+impl StructInfo {
+	pub fn base_ts(&self) ?&TypeSymbol {
+		if (self.has_base) {
+			if (self.base_expr is Ident) {
+				let sym = (self.base_expr as &Ident).sym;
+				if (sym is TypeSymbol) {
+					return sym as &TypeSymbol;
+				}
+			} elif (self.base_expr is PathExpr) {
+				let sym = (self.base_expr as &PathExpr).field_info;
+				if (sym is TypeSymbol) {
+					return sym as &TypeSymbol;
+				}
+			}
+		}
+		return null;
+	}
+}
+
+impl SumTypeInfo {
+	pub fn contains(&self, typ: Type) bool {
+		for (t in self.typs) {
+			if (typ.eq(t)) return true;
+		}
+		return false;
+	}
+}
+
+impl EnumInfo {
+	pub fn contains(&self, name: str) bool {
+		for (&f in self.fields) {
+			if (f.name == name) return true;
+		}
+		return false;
+	}
+}

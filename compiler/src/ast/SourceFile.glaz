@@ -1,0 +1,41 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+pub enum SourceKind {
+	Default,
+	Declaration
+}
+
+@[inline]
+pub fn get_sf_kind(path: str) SourceKind {
+	return if (path.ends_with(".d.glaz")) .Declaration else .Default;
+}
+
+pub struct ImportData {
+	pub scope: ?&Scope,
+	pub mods: str,
+	pub path: str,
+	pub sym: Symbol
+}
+
+pub struct SourceFile {
+	pub imports: vec[ImportData],
+	pub file: str,
+	pub module: str,
+	pub kind: SourceKind,
+	pub mut decls: vec[Decl],
+	pub scope: &Scope = &Scope{},
+	pub sym: Symbol,
+	pub mut imported_syms: map<str, Symbol> // for `use`
+}
+
+impl SourceFile {
+	pub fn find(&self, name: str) ?&Symbol {
+		for (alias, &sym in self.imported_syms) {
+			if (alias == name) {
+				return sym;
+			}
+		}
+		return null;
+	}
+}

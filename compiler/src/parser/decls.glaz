@@ -1,0 +1,950 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+use src::tokens::{ Kind };
+
+impl Parser {
+	@[inline]
+	fn empty_decl(&self) ast::Decl {
+		return ast::EmptyDecl{};
+	}
+
+	fn parse_attributes(mut &self) ast::Attrs {
+		let mut attrs = ast::Attrs{};
+		let mut has_attr = map<str, bool>::new();
+		while (self.accept(.At)) {
+			self.check(.Lbracket);
+			do {
+				let name_pos = self.tok.pos;
+				let name = if (self.accept(.KeyUnsafe)) "unsafe" else self.parse_name();
+				if (has_attr[name]) {
+					self.error(fmt!("duplicate `{}` attribute", name), &name_pos);
+				}
+				has_attr[name] = true;
+				let mut args = vec[ast::AttrArg]::new();
+				if (self.accept(.Lparen)) {
+					do {
+						let key = self.parse_name();
+						self.check(.Assign);
+						let value = self.parse_literal();
+						push!(args, ast::AttrArg{
+							name: key,
+							expr: value
+						});
+					} while(self.accept(.Comma));
+					self.check(.Rparen);
+				}
+				attrs.add(ast::Attr{
+					name: name,
+					args: args,
+					pos: name_pos.extend(&self.prev_tok.pos)
+				});
+			} while(self.accept(.Semicolon));
+			self.check(.Rbracket);
+		}
+		return attrs;
+	}
+
+	fn parse_declarations(mut &self) vec[ast::Decl] {
+		let mut decls = vec[ast::Decl]::new();
+		while (self.tok.kind != .EOF) {
+			push!(decls, self.parse_declaration());
+			if (self.should_abort) {
+				break;
+			}
+		}
+		return decls;
+	}
+
+	fn parse_declaration(mut &self) ast::Decl {
+		let attrs = self.parse_attributes();
+		let pub_pos = self.tok.pos;
+		let is_pub = self.accept(.KeyPub); // pub | private (default, not a keyword)
+		if (is_pub and self.inside_extern) {
+			self.error("cannot use `pub` inside `extern` blocks");
+			self.note("extern declarations are public by default");
+		}
+		let mut decl = self.empty_decl();
+		switch (self.tok.kind) {
+			.CHash => {
+				if (attrs.len() > 0) self.error("C hash don't support attributes");
+				if (is_pub) self.error("unexpected keyword `pub`", &pub_pos);
+				decl = self.parse_chash();
+			}
+			.KeyUse => {
+				if (attrs.len() > 0) self.error("`use` declaration don't support attributes");
+				if (is_pub) self.error("unexpected keyword `pub`", &pub_pos);
+				decl = self.parse_use();
+			}
+			.KeyExtern => {
+				if (attrs.len() > 0) self.error("`extern` blocks don't support attributes");
+				if (is_pub) self.error("unexpected keyword `pub`", &pub_pos);
+				decl = self.parse_extern();
+			}
+			.KeyConst => {
+				if (attrs.len() > 0) self.error("const declarations don't support attributes");
+				decl = self.parse_const_decl(is_pub);
+			}
+			.KeyMod => {
+				if (attrs.len() > 0) self.error("`mod` blocks don't support attributes");
+				decl = self.parse_mod_decl(is_pub);
+			}
+			.KeyType => {
+				if (attrs.len() > 0) self.error("type aliases don't support attributes");
+				decl = self.parse_type_decl(is_pub);
+			}
+			.KeyStruct, .KeyUnion => {
+				decl = self.parse_struct_decl(attrs, is_pub);
+			}
+			.KeyEnum => {
+				decl = self.parse_enum_decl(is_pub);
+			}
+			.KeyImpl => {
+				if (attrs.len() > 0) self.error("`impl` blocks don't support attributes");
+				if (is_pub) self.error("unexpected keyword `pub`", &pub_pos);
+				decl = self.parse_impl_decl();
+			}
+			.KeyFn => {
+				decl = self.parse_fn(attrs, is_pub);
+			}
+			.KeyTest => {
+				if (attrs.len() > 0) self.error("`test` blocks don't support attributes");
+				if (is_pub) self.error("unexpected keyword `pub`", &pub_pos);
+				decl = self.parse_test();
+			}
+			else => {
+				self.error(fmt!("expected declaration, found {}", self.tok));
+				self.next();
+				self.should_abort = true;
+			}
+		}
+		return decl;
+	}
+
+	fn parse_chash(mut &self) ast::Decl {
+		let line = self.tok.lit;
+		let pos = self.tok.pos;
+		self.next();
+		return ast::CHash{
+			line: line,
+			pos: pos
+		};
+	}
+
+	fn parse_extern(mut &self) ast::Decl {
+		if (self.inside_extern) {
+			self.error("`extern` blocks cannot be nested");
+		}
+		let pos = self.tok.pos;
+		self.check(.KeyExtern);
+		self.inside_extern = true;
+
+		let old_sym = self.sym;
+		let old_scope = self.scope;
+		let old_mods = self.mods;
+		self.sym = &self.table.cmod;
+		self.scope = ast::Scope::new(self.table.cmod.scope);
+		self.mods = "C";
+
+		let mut decls = vec[ast::Decl]::new();
+		self.check(.Lbrace);
+		while (self.tok.kind != .Rbrace) {
+			push!(decls, self.parse_declaration());
+		}
+		self.check(.Rbrace);
+		if (decls.len == 0) {
+			self.error("`extern` blocks cannot be empty", &pos);
+		}
+
+		self.sym = old_sym;
+		self.scope = old_scope;
+		self.mods = old_mods;
+		self.inside_extern = false;
+		return ast::ExternBlock{
+			decls: decls
+		};
+	}
+
+	fn parse_use(mut &self) ast::Decl {
+		let mut glob = false;
+		let mut pos = self.tok.pos;
+		let mut syms = vec[ast::UseData]::new();
+		self.next();
+
+		if (self.inside_extern) {
+			self.error("cannot use `use` inside `extern` blocks", &pos);
+		}
+
+		let mut path = if (self.tok.kind == .KeySrc) self.parse_src() else self.parse_ident();
+
+		if (self.tok.kind == .DoubleColon) do {
+			switch (self.peek_tok.kind) {
+				.Lbrace => {
+					self.next(); // `use x::alpha::{ fn1 };`
+					break;
+				}
+				.Mult => {
+					glob = true; // `use x::alpha::*;`
+					self.next();
+					self.next();
+					break;
+				}
+				else => path = self.parse_path_expr(path);
+			}
+		} while (self.tok.kind == .DoubleColon);
+
+		let mut alias = "";
+		if (!glob and self.accept(.KeyAs)) {
+			alias = self.parse_name();
+		} elif (path is ast::PathExpr) {
+			alias = (path as &ast::PathExpr).field_name;
+		}
+
+		if (!glob and self.accept(.Lbrace)) {
+			do {
+				let mut spos = self.tok.pos;
+				let subpath = self.parse_expr();
+				if (!(subpath is ast::Ident or subpath is ast::SelfExpr)) {
+					self.error("expected a valid path", subpath.pos());
+				} else {
+					let mut sub_alias = "";
+					if (subpath is ast::SelfExpr) {
+						sub_alias = alias;
+					} elif (subpath is ast::Ident) {
+						sub_alias = (subpath as &ast::Ident).name;
+					} else {
+						sub_alias = (subpath as &ast::PathExpr).field_name;
+					}
+					spos = spos.extend(&self.tok.pos);
+					push!(syms, ast::UseData{
+						path: subpath,
+						alias: sub_alias,
+						pos: spos
+					});
+				}
+			} while (self.accept(.Comma));
+			self.check(.Rbrace);
+		}
+
+		pos = pos.extend(&self.prev_tok.pos);
+		self.check(.Semicolon);
+		return ast::Use{
+			path: path,
+			alias: alias,
+			glob: glob,
+			syms: syms,
+			pos: pos
+		};
+	}
+
+	fn parse_const_decl(mut &self, is_pub: bool) ast::Decl {
+		self.check(.KeyConst);
+		let name_pos = self.tok.pos;
+		let name = self.parse_name();
+		self.check(.Colon);
+		let typ = self.parse_type();
+		let mut expr = self.empty_expr();
+		if (!self.inside_extern) {
+			self.check(.Assign);
+			expr = self.parse_expr();
+		}
+		self.check(.Semicolon);
+		let c = ast::Const{
+			name: name,
+			module: self.mods,
+			is_pub: is_pub or self.inside_extern,
+			pos: name_pos,
+			typ: typ
+		};
+		if (self.inside_extern) {
+			try self.table.cmod.add(c) catch self.error(err.msg, &name_pos);
+		} else {
+			try self.sym.add(c) catch self.error(err.msg, &name_pos);
+		}
+		return ast::ConstDecl{
+			name: name,
+			name_pos: name_pos,
+			module: self.mods,
+			is_pub: is_pub,
+			expr: expr,
+			has_expr: !self.inside_extern,
+			pos: name_pos,
+			typ: typ
+		};
+	}
+
+	fn parse_mod_decl(mut &self, is_pub: bool) ast::Decl {
+		if (self.inside_extern) {
+			self.error("cannot create modules inside `extern` blocks");
+		}
+		self.check(.KeyMod);
+
+		self.open_scope();
+		let name_pos = self.tok.pos;
+		let name = self.parse_name();
+		let sc = self.scope.?;
+		self.add_modname(name);
+
+		self.scope.?.detached_from_parent = true;
+
+		let mut old_sym = self.sym;
+		self.sym = ast::Module{
+			name: name,
+			scope: sc,
+			module: self.mods,
+			is_pub: is_pub,
+			pos: name_pos
+		};
+
+		let mut decls = vec[ast::Decl]::new();
+		if (self.accept(.Semicolon)) {
+			self.load_mod(name, name_pos);
+		} else {
+			self.check(.Lbrace);
+			while (self.tok.kind != .Rbrace) {
+				push!(decls, self.parse_declaration());
+			}
+			self.check(.Rbrace);
+		}
+
+		let sym = self.sym;
+		try old_sym.add(self.sym) catch {
+			self.error(err.msg);
+		};
+		self.sym = old_sym;
+
+		self.close_scope();
+		self.cut_mods();
+		return ast::ModDecl{
+			name: name,
+			name_pos: name_pos,
+			scope: sc,
+			is_pub: is_pub,
+			decls: decls,
+			module: self.mods,
+			sym: sym
+		};
+	}
+
+	fn parse_type_decl(mut &self, is_pub: bool) ast::Decl {
+		if (self.inside_extern) {
+			self.error("cannot create type aliases inside `extern` blocks");
+		}
+		self.check(.KeyType);
+		let pos = self.tok.pos;
+		let name = self.parse_name();
+		let gname = self.make_gname(name);
+		self.check(.Assign);
+
+		let parent = self.parse_type();
+		if (self.accept(.Pipe)) {
+			let mut types = vec[ast::Type]{parent};
+			do {
+				push!(types, self.parse_type());
+			} while (self.accept(.Pipe));
+			let mut default_expr = self.empty_expr();
+			if (self.accept(.Assign)) {
+				default_expr = self.parse_expr();
+			}
+			try self.sym.add(ast::TypeSymbol{
+				name: name,
+				gname: gname,
+				kind: .SumType,
+				info: ast::SumTypeInfo{
+					typs: types,
+					default_expr: default_expr,
+					has_default_expr: default_expr !is ast::EmptyExpr
+				},
+				module: self.mods,
+				is_pub: is_pub,
+				pos: pos
+			}) catch self.error(err.msg, &pos);
+			self.check(.Semicolon);
+			return ast::TypeDecl{
+				name: name,
+				name_pos: pos,
+				is_sumtype: true,
+				default_expr: default_expr,
+				has_default_expr: default_expr !is ast::EmptyExpr,
+				is_pub: is_pub,
+				types: types
+			};
+		}
+		try self.sym.add(ast::TypeSymbol{
+			name: name,
+			gname: gname,
+			kind: .Alias,
+			info: ast::AliasInfo{
+				parent: parent
+			},
+			module: self.mods,
+			is_pub: is_pub,
+			pos: pos
+		}) catch self.error(err.msg, &pos);
+		self.check(.Semicolon);
+		return ast::TypeDecl{
+			name: name,
+			name_pos: pos,
+			is_pub: is_pub,
+			parent: parent
+		};
+	}
+
+	fn parse_struct_decl(mut &self, attrs: ast::Attrs, is_pub: bool) ast::Decl {
+		let mut noinit = false;
+		let mut is_typedef = false;
+		let mut is_opaque = false;
+		let mut is_copy = false;
+		let mut is_special_type = false;
+		let mut special_type_name = "";
+		for (name, &attr in attrs.attrs) {
+			switch (name) {
+				"typedef" => is_typedef = true;
+				"noinit" => noinit = true;
+				"copy" => is_copy = true;
+
+				// `special_type` is an attribute that tells the compiler
+				// that the following struct is a special type
+				"special_type" => {
+					if (let arg = attr.get("name")) {
+						if (is_special_type) {
+							self.error("duplicate `special_type` attribute", &attr.pos);
+						} else {
+							is_special_type = true;
+							if (arg.expr is ast::StringLiteral) {
+								let strlit = cast(arg.expr, &ast::StringLiteral);
+								switch (strlit.lit) {
+									"vec" => {
+										if (self.table.has_vec_type) {
+											self.error("cannot mark this struct as the special type `vec`", &attr.pos);
+											self.note("another struct was already marked as this special type");
+										} else {
+											self.table.has_vec_type = true;
+										}
+									}
+									"map" => {
+										if (self.table.has_map_type) {
+											self.error("cannot mark this struct as the special type `map`", &attr.pos);
+											self.note("another struct was already marked as this special type");
+										} else {
+											self.table.has_map_type = true;
+										}
+									}
+									"string" => {
+										if (self.table.has_string_type) {
+											self.error("cannot mark this struct as the special type `string`", &attr.pos);
+											self.note("another struct was already marked as this special type");
+										} else {
+											self.table.has_string_type = true;
+										}
+									}
+									"error" => {
+										if (self.table.has_error_type) {
+											self.error("cannot mark this struct as the special type `error`", &attr.pos);
+											self.note("another struct was already marked as this special type");
+										} else {
+											self.table.has_error_type = true;
+										}
+									}
+									else => {
+										self.error("unknown special type name", &strlit.pos);
+										self.help("one of the following was expected: "
+										"`vec`, `map`, `string` or `error`");
+									}
+								}
+								special_type_name = strlit.lit;
+							} else {
+								self.error(
+									"expected string literal",
+									arg.expr.pos()
+								);
+							}
+						}
+					} else {
+						self.error(
+							"`special_type` attribute requires an argument named `name`",
+							&attr.pos
+						);
+					}
+				}
+				else => {}
+			}
+		}
+
+		let is_union = self.tok.kind == .KeyUnion;
+		self.next();
+
+		let pos = self.tok.pos;
+		let name = self.parse_name();
+
+		// inheritance
+		let has_base = !is_union and self.accept(.Colon);
+		let base_expr = if (has_base) if (self.peek_tok.kind == .DoubleColon)
+				self.parse_path_expr(self.parse_ident()) else self.parse_ident()
+				else self.empty_expr();
+		if (has_base and self.inside_extern) {
+			self.error("extern structs don't support inheritance", base_expr.pos());
+		}
+
+		let mut fields = vec[ast::Field]::new();
+		let mut dfields = vec[ast::StructField]::new();
+		if (self.accept(.Semicolon)) {
+			if (!self.inside_extern) {
+				self.error("opaque structs are only valid inside `extern` blocks", &pos);
+			}
+			is_opaque = true;
+		} else {
+			self.check(.Lbrace);
+			if (self.tok.kind != .Rbrace) {
+				do {
+					let fattrs = self.parse_attributes();
+					let fis_pub = self.accept(.KeyPub);
+					let is_mut = self.accept(.KeyMut);
+					let fpos = self.tok.pos;
+					if (fis_pub and self.inside_extern) {
+						self.error("cannot use `pub` inside `extern` blocks", &fpos);
+						self.note("extern struct/union fields are public by default");
+					}
+					let fname = self.parse_name();
+					self.check(.Colon);
+					let ftyp = self.parse_type();
+					let mut expr = self.empty_expr();
+					if (!is_union and self.accept(.Assign)) {
+						expr = self.parse_expr();
+					}
+					push!(fields, ast::Field{
+						name: fname,
+						typ: ftyp,
+						default_expr: expr,
+						has_default_expr: expr !is ast::EmptyExpr,
+						is_mut: is_mut,
+						is_pub: fis_pub or self.inside_extern,
+						attrs: fattrs
+					});
+					push!(dfields, ast::StructField{
+						name: fname,
+						name_pos: fpos,
+						has_default_expr: expr !is ast::EmptyExpr,
+						default_expr: expr,
+						is_mut: is_mut,
+						is_pub: fis_pub,
+						pos: fpos,
+						attrs: fattrs,
+						typ: ftyp
+					});
+				} while (self.accept(.Comma));
+			}
+			self.check(.Rbrace);
+		}
+
+		let gname = if (self.inside_extern) name else self.make_gname(name);
+		let ts = cast(ast::TypeSymbol{
+			name: name,
+			gname: gname,
+			kind: if (is_union) .Union else .Struct,
+			info: ast::StructInfo{
+				attrs: attrs,
+				is_extern: self.inside_extern,
+				is_typedef: is_typedef,
+				is_opaque: is_opaque,
+				is_union: is_union,
+				noinit: noinit,
+				has_base: has_base,
+				base_expr: base_expr
+			},
+			fields: fields,
+			module: self.mods,
+			is_pub: is_pub or self.inside_extern,
+			is_copy: is_copy,
+			pos: pos
+		}, ast::Symbol);
+		if (self.inside_extern) {
+			try self.table.cmod.add(ts) catch self.error(err.msg, &pos);
+		} else {
+			try self.sym.add(ts) catch self.error(err.msg, &pos);
+			if (is_special_type) {
+				switch (special_type_name) {
+					"vec" => self.table.vec_type = ts;
+					"map" => self.table.map_type = ts;
+					"string" => self.table.string_type = ts;
+					"error" => self.table.error_type = ts;
+					else => {}
+				}
+			}
+		}
+
+		if (is_special_type and (is_typedef or is_opaque or is_copy or noinit
+			or has_base or is_union or self.inside_extern)) {
+			self.error(
+				fmt!("`{}` cannot have the `special_type` attribute", name), &pos
+			);
+		}
+
+		return ast::StructDecl{
+			attrs: attrs,
+			name: name,
+			name_pos: pos,
+			module: self.mods,
+			fields: dfields,
+			is_union: is_union,
+			is_pub: is_pub,
+			has_base: has_base,
+			base_expr: base_expr
+		};
+	}
+
+	fn parse_enum_decl(mut &self, is_pub: bool) ast::Decl {
+		self.check(.KeyEnum);
+		let pos = self.tok.pos;
+		let name = self.parse_name();
+
+		let mut fields = vec[ast::EnumField]::new();
+		let mut fields2 = map<str, bool>::new();
+		self.check(.Lbrace);
+		do {
+			let fpos = self.tok.pos;
+			let fname = self.parse_name();
+			let mut expr = self.empty_expr();
+			if (self.accept(.Assign)) {
+				expr = self.parse_expr();
+			}
+			if (fields2[fname]) {
+				self.error(fmt!("enum field `{}.{}` is duplicate", name, fname), &fpos);
+			}
+			fields2[fname] = true;
+			push!(fields, ast::EnumField{
+				name: fname,
+				name_pos: fpos,
+				expr: expr,
+				has_expr: expr !is ast::EmptyExpr
+			});
+		} while (self.accept(.Comma));
+		self.check(.Rbrace);
+
+		let gname = if (self.inside_extern) name else self.make_gname(name);
+		let ts = ast::TypeSymbol{
+			name: name,
+			gname: gname,
+			kind: .Enum,
+			info: ast::EnumInfo{
+				fields: fields
+			},
+			module: self.mods,
+			is_pub: is_pub or self.inside_extern,
+			pos: pos
+		};
+		if (self.inside_extern) {
+			try self.table.cmod.add(ts) catch self.error(err.msg, &pos);
+		} else {
+			try self.sym.add(ts) catch self.error(err.msg, &pos);
+		}
+		return ast::EnumDecl{
+			name: name,
+			name_pos: pos,
+			gname: gname,
+			fields: fields,
+			is_pub: is_pub or self.inside_extern
+		};
+	}
+
+	fn parse_impl_decl(mut &self) ast::Decl {
+		if (self.inside_extern) {
+			self.error("cannot use `impl` inside `extern` blocks");
+		}
+		let mut pos = self.tok.pos;
+		self.check(.KeyImpl);
+
+		let typ = self.parse_type();
+		pos = pos.extend(&self.prev_tok.pos);
+		self.inside_impl = true;
+		self.self_type = typ;
+
+		let mut decls = vec[ast::Decl]::new();
+		self.check(.Lbrace);
+		while (self.tok.kind != .Rbrace) {
+			push!(decls, self.parse_declaration());
+		}
+		self.check(.Rbrace);
+		if (decls.len == 0) {
+			self.error("`impl` blocks cannot be empty", &pos);
+		}
+
+		self.inside_impl = false;
+		self.self_type = ast::VOID_T;
+		return ast::ImplDecl{
+			typ: typ,
+			decls: decls
+		};
+	}
+
+	fn parse_fn_args(mut &self, is_abstract: bool) (vec[ast::Param], bool, bool) {
+		let mut args = vec[ast::Param]::new();
+		let mut variadic, mut has_named_args = false, false;
+		let mut already_args = map<str, bool>::new();
+
+		if (self.tok.kind != .Rparen) do switch {
+			self.tok.kind == .Ellipsis => {
+				if (!self.inside_extern) {
+					self.error("only extern functions can use `...`");
+				} elif (self.peek_tok.kind == .Comma) {
+					self.error("`...` should go to the end of the arguments");
+				}
+				variadic = true;
+				self.next();
+			}
+			else => {
+				let mut pos = self.tok.pos;
+				let is_mut = self.accept(.KeyMut);
+				let name = self.parse_name();
+				self.check(.Colon);
+
+				let is_variadic = self.accept(.Ellipsis);
+				let mut typ = self.parse_type();
+				if (is_variadic) {
+					if (self.inside_extern) {
+						self.error("extern functions cannot support variadic arguments", &pos);
+						self.help("use `...` instead: `fn some_func(a: i32, ...);`");
+					}
+					typ = typ.variadic();
+					variadic = true;
+				}
+
+				let mut default_expr = self.empty_expr();
+				if (self.accept(.Assign)) {
+					if (self.inside_extern) {
+						self.error("extern functions cannot support default arguments", &pos);
+					}
+					default_expr = self.parse_expr();
+					has_named_args = true;
+				}
+
+				pos = pos.extend(&self.prev_tok.pos);
+				if (!self.inside_extern) {
+					try self.scope.?.add(ast::Var{
+						name: name,
+						is_arg: true,
+						is_mut: is_mut,
+						is_changed: self.kind == .Declaration,
+						is_used: self.inside_extern or self.kind == .Declaration
+							or is_abstract,
+						pos: pos,
+						typ: typ
+					}, false) catch {};
+				}
+				push!(args, ast::Param{
+					name: name,
+					pos: pos,
+					is_mut: is_mut,
+					default_expr: default_expr,
+					has_default_expr: default_expr !is ast::EmptyExpr,
+					typ: typ
+				});
+				if (already_args[name]) {
+					self.error(fmt!("redefinition of argument `{}`", name), &pos);
+				} elif (name != "_") {
+					already_args[name] = true;
+				}
+			}
+		} while (self.accept(.Comma));
+
+		return (args, variadic, has_named_args);
+	}
+
+	fn fn_has_receiver(&self) bool {
+		if (self.tok.kind in vec[Kind]{.Amp, .KeySelf}) {
+			return true;
+		}
+		if (self.tok.kind == .KeyMut
+			and (self.peek_token(1).kind == .KeySelf
+			or self.peek_token(2).kind == .KeySelf)) {
+			return true;
+		}
+		return false;
+	}
+
+	fn parse_fn(mut &self, attrs: ast::Attrs, is_pub: bool) ast::Decl {
+		let mut is_unsafe, mut is_deprecated = self.inside_extern, false;
+		let mut is_inline = false;
+		let mut is_abstract = false;
+		for (k, &attr in attrs.attrs) {
+			switch (k) {
+				"unsafe" => is_unsafe = true;
+				"abstract" => is_abstract = true;
+				"deprecated" => is_deprecated = true;
+				"inline" => is_inline = true;
+				"ccode" => {
+					if (let n = attr.get("cname")) {
+						if (n.expr !is ast::StringLiteral) {
+							self.error("expected a string literal", &attr.pos);
+						}
+					} else {
+						self.error("argument `cname` not found", &attr.pos);
+						self.note("expected `@[ccode(cname=\"x\")]`");
+					}
+				}
+				else => {}
+			}
+		}
+
+		self.check(.KeyFn);
+
+		let mut header_pos = self.tok.pos;
+		let name_pos = self.tok.pos;
+		let name = self.parse_name();
+
+		// include arguments in the same scope of the body of the function.
+		self.check(.Lparen);
+		self.open_scope();
+		let sc = self.scope.?;
+		self.fnscope = sc;
+
+		// receiver: `self`, `&self`, `mut self` or `mut &self`
+		let mut is_associated = self.inside_impl;
+		let mut is_method = false;
+		let mut self_type = self.self_type;
+		let mut rec_is_mut = false;
+		if (self.inside_impl and self.fn_has_receiver()) {
+			let mut pos = self.tok.pos;
+			rec_is_mut = self.accept(.KeyMut);
+			let is_ref = self.accept(.Amp);
+			if (is_ref or rec_is_mut) {
+				pos = pos.extend(&self.tok.pos);
+			}
+			self.check(.KeySelf);
+
+			if (is_ref) {
+				self_type = self_type.ref();
+			}
+
+			is_associated = false;
+			is_method = true;
+
+			try self.scope.?.add(ast::Var{
+				name: "self",
+				typ: self_type,
+				is_arg: true,
+				is_used: true,
+				is_changed: (is_method and name == "drop") or self.kind == .Declaration
+					or is_abstract,
+				is_mut: rec_is_mut,
+				pos: pos
+			}, false) catch {
+				self.error("unexpected bug: " + err.msg, &pos);
+			};
+
+			if (self.tok.kind != .Rparen) {
+				self.check(.Comma);
+			}
+		}
+
+		let (args, variadic, has_named_args) = self.parse_fn_args(is_abstract);
+		header_pos = header_pos.extend(&self.tok.pos);
+		self.check(.Rparen);
+
+		let mut ret_typ = ast::VOID_T;
+		let is_result = self.accept(.Bang);
+		if (self.tok.kind !in vec[Kind]{.Lbrace, .Semicolon}) {
+			ret_typ = self.parse_type();
+		}
+		if (is_result) ret_typ = ret_typ.result();
+
+		let mut stmts = vec[ast::Stmt]::new();
+		if (is_abstract and is_method and self.tok.kind == .Lbrace) {
+			self.error("abstract methods cannot have bodies", &header_pos);
+		} elif (self.inside_extern and self.tok.kind == .Lbrace) {
+			self.error("extern functions cannot have bodies", &header_pos);
+		} else {
+			if (self.inside_extern or (is_abstract and is_method) or self.kind == .Declaration) {
+				self.check(.Semicolon);
+			} else {
+				self.check(.Lbrace);
+				if (self.tok.kind != .Rbrace) {
+					stmts = self.parse_stmts();
+				}
+				self.check(.Rbrace);
+			}
+		}
+		self.close_scope();
+
+		let fis_pub = is_pub or self.inside_extern;
+		let is_main = self.mods == self.prefs.src_name and name == "main";
+		let fn_info = ast::Function{
+			attrs: attrs,
+			name: name,
+			args: args.clone(),
+			rec_typ: self_type,
+			rec_is_mut: rec_is_mut,
+			ret_typ: ret_typ,
+			pos: header_pos,
+			is_pub: fis_pub,
+			is_extern: self.inside_extern,
+			is_unsafe: is_unsafe,
+			is_method: is_method,
+			is_associated: is_associated,
+			is_deprecated: is_deprecated,
+			is_inline: is_inline,
+			is_variadic: variadic,
+			is_main: is_main,
+			has_named_args: has_named_args,
+			module: self.mods
+		};
+		if (self.inside_extern) {
+			try self.table.cmod.add(fn_info) catch self.error(err.msg, &name_pos);
+		} elif (!(is_method or is_associated)) {
+			try self.sym.add(fn_info) catch self.error(err.msg, &name_pos);
+		}
+
+		let use_base = self.use_base;
+		if (use_base) {
+			self.use_base = false;
+		}
+
+		return ast::FnDecl{
+			attrs: attrs,
+			name: name,
+			name_pos: name_pos,
+			rec_is_mut: rec_is_mut,
+			rec_typ: self_type,
+			args: args.clone(),
+			ret_typ: ret_typ,
+			scope: sc,
+			stmts: stmts,
+			is_pub: fis_pub,
+			is_method: is_method,
+			is_unsafe: is_unsafe or self.inside_extern,
+			is_associated: is_associated,
+			is_extern: self.inside_extern,
+			is_deprecated: is_deprecated,
+			is_inline: is_inline,
+			is_variadic: variadic,
+			is_main: is_main,
+			info: fn_info,
+			use_base: use_base
+		};
+	}
+
+	fn parse_test(mut &self) ast::Decl {
+		if (self.inside_extern) {
+			self.error("cannot create tests inside `extern` blocks");
+		}
+		self.inside_test = true;
+		self.check(.KeyTest);
+		let name = self.check_string();
+		let mut stmts = vec[ast::Stmt]::new();
+		self.open_scope();
+		let sc = self.scope.?;
+		self.check(.Lbrace);
+		if (self.tok.kind != .Rbrace) {
+			stmts = self.parse_stmts();
+		}
+		self.check(.Rbrace);
+		self.close_scope();
+		self.inside_test = false;
+		return ast::TestDecl{
+			name: name,
+			scope: sc,
+			stmts: stmts
+		};
+	}
+}

@@ -1,0 +1,35 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+pub enum CFlagKind {
+	Include,
+	Define,
+	Compile,
+	Flag
+}
+
+impl CFlagKind {
+	fn to_str(self) str {
+		switch (self) {
+			.Include => return "include";
+			.Define => return "define";
+			.Compile => return "compile";
+			.Flag => return "flag";
+		}
+		return "";
+	}
+}
+
+pub struct CFlag {
+	pub mut kind: CFlagKind,
+	pub mut value: str
+}
+
+impl CFlag {
+	pub fn is_comptime(&self) bool {
+		switch (self.kind) {
+			.Compile, .Flag => return true;
+			else => return false;
+		}
+	}
+}

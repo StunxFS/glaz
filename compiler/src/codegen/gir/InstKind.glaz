@@ -1,0 +1,32 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+/// List of valid GIR instructions.
+pub enum InstKind {
+	/// Allocate a value on the stack.
+	Alloca,
+
+	/// Allocate a value on the heap.
+	AllocaHeap,
+
+	/// Casts one type to another.
+	Cast,
+
+	/// For polymorphism. Cast a reference from a derived struct to
+	/// its base struct.
+	Upcast,
+
+	/// For polymorphism. Cast a reference from a base struct to its
+	/// derived struct.
+	Downcast,
+
+	/// Jump to label1 if the result of the condition is true, otherwise
+	/// jump to label2.
+	Br,
+
+	/// Jump to a label.
+	Goto,
+
+	/// Call a function and return the value returned by it.
+	Call
+}

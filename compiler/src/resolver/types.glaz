@@ -1,0 +1,186 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+use src::tokens;
+
+const BUILTIN_TYPES: vec[str] = vec[str]{
+	"bool", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32",
+	"u64", "usize", "f32", "f64", "rune", "charptr", "rawptr", "str"
+};
+
+impl Resolver {
+	fn resolve_type(mut &self, typ: &ast::Type) bool {
+		switch (typ) is {
+			ast::SimpleType => {
+				let mut st = typ as &ast::SimpleType;
+				if (!st.unresolved) {
+					return self.resolve_sumtype(typ);
+				} elif (st.expr is ast::PathExpr) {
+					let mut p = st.expr as &ast::PathExpr;
+					let old_et = self.expecting_type;
+					self.expecting_type = true;
+					self.resolve_path(p);
+					self.expecting_type = old_et;
+					if (!p.has_err) {
+						switch (p.field_info) is {
+							ast::TypeSymbol => {
+								st.typ_s = p.field_info as &ast::TypeSymbol;
+							}
+							else => {
+								if (p.field_info !is ast::UnknownSymbol) {
+									self.error(
+										fmt!(
+											"expected type, found {} `{}`",
+											p.field_info.kind(),
+											p.field_name
+										),
+										&p.field_pos
+									);
+								}
+								return false;
+							}
+						}
+					} else {
+						return false;
+					}
+				} else {
+					let i = st.expr as &ast::Ident;
+					if (i.name in BUILTIN_TYPES) {
+						if (i.name == "str" and !self.table.has_string_type) {
+							self.error("cannot use string type", &i.pos);
+							self.note("there is no struct marked as the special type `string`");
+						}
+						return true;
+					} else {
+						if (let ts = self.find_type_symbol(i.name, &i.pos)) {
+							st.typ_s = ts;
+						} else {
+							return false;
+						}
+					}
+				}
+				st.unresolved = false;
+			}
+			ast::Reference => {
+				let ref = typ as &ast::Reference;
+				if (!self.resolve_type(&ref.parent)) return false;
+			}
+			ast::Pointer => {
+				let ptr = typ as &ast::Pointer;
+				if (!self.resolve_type(&ptr.parent)) return false;
+			}
+			ast::Optional => {
+				let opt = typ as &ast::Optional;
+				if (!self.resolve_type(&opt.parent)) return false;
+			}
+			ast::Result => {
+				let result = typ as &ast::Result;
+				if (!self.resolve_type(&result.parent)) return false;
+			}
+			ast::ArrayType => {
+				let mut arr = typ as &ast::ArrayType;
+				if (!self.resolve_type(&arr.elem_typ)) {
+					return false;
+				}
+				if (arr.is_fixed) {
+					self.resolve_expr(&arr.size);
+				}
+				arr.unresolved = false;
+				if (arr.is_slice) {
+					arr.typ_s = self.table.gmod.add_or_get_slice(arr.elem_typ);
+				} elif (arr.is_fixed) {
+					arr.typ_s = self.table.gmod.add_or_get_array(arr.size, arr.elem_typ);
+				} else {
+					if (!self.table.has_vec_type) {
+						self.error("cannot use vector type", &arr.pos);
+						self.note("there is no struct marked as the special type `vec`");
+					}
+					arr.typ_s = self.table.gmod.add_or_get_vector(arr.elem_typ);
+				}
+			}
+			ast::MapType => {
+				let mut m = typ as &ast::MapType;
+				if (!self.table.has_map_type) {
+					self.error("cannot use map type", &m.pos);
+					self.note("there is no struct marked as the special type `map`");
+				}
+				if (!self.resolve_type(&m.val_typ)) {
+					return false;
+				}
+				m.unresolved = false;
+				m.typ_s = self.table.gmod.add_or_get_map(m.val_typ);
+			}
+			ast::TupleType => {
+				let mut t = typ as &ast::TupleType;
+				for (&tt in t.typs) {
+					if (!self.resolve_type(tt)) {
+						return false;
+					}
+				}
+				t.unresolved = false;
+				t.typ_s = self.table.gmod.add_or_get_tuple(t.typs);
+			}
+			ast::BoxType => {
+				let mut b = typ as &ast::BoxType;
+				if (!self.resolve_type(&b.elem_typ)) {
+					return false;
+				}
+				b.unresolved = false;
+				b.typ_s = self.table.gmod.add_or_get_box(b.elem_typ);
+			}
+			ast::Variadic => {
+				let mut b = typ as &ast::Variadic;
+				if (!self.resolve_type(&b.elem_typ)) {
+					return false;
+				}
+				b.unresolved = false;
+				b.typ_s = self.table.gmod.add_or_get_vector(b.elem_typ);
+			}
+		}
+		return true;
+	}
+
+	fn find_type_symbol(mut &self, name: str, pos: &tokens::Position) ?&ast::TypeSymbol {
+		if (let im = self.sf.find(name)) {
+			self.used_syms[name] = true;
+			return self.get_ts(im, name, pos);
+		} elif (let s = self.sym.find(name)) {
+			return self.get_ts(s, name, pos);
+		} elif (let gs = self.table.gmod.find(name)) {
+			return self.get_ts(gs, name, pos);
+		} else {
+			self.error(fmt!("cannot find type `{}` in this scope", name), pos);
+			return null;
+		}
+		return null;
+	}
+
+	fn get_ts(mut &self, s: &ast::Symbol, name: str, pos: &tokens::Position) ?&ast::TypeSymbol {
+		switch (s.*) is {
+			ast::TypeSymbol => {
+				return s.* as &ast::TypeSymbol;
+			}
+			else => {
+				if (s.* !is ast::UnknownSymbol) {
+					self.error(fmt!("expected type, found {} `{}`", s.kind(), name), pos);
+				}
+				return null;
+			}
+		}
+		return null;
+	}
+
+	fn resolve_sumtype(mut &self, typ: &ast::Type) bool {
+		let ts = typ.ts();
+		if (ts.kind == .SumType) {
+			let i = ts.info as &ast::SumTypeInfo;
+			for (&t in i.typs) {
+				if (!self.resolve_type(t)) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+}

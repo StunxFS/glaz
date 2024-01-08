@@ -1,0 +1,148 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+pub mod c;
+pub mod gir;
+pub mod newc;
+
+use std::{console, os, fs};
+
+// TODO: remove this when the new backend and GIR are implemented
+use src::codegen::c as old_c;
+
+use src::{ast, pref, utils, dgen};
+
+pub struct CodeGen {
+	table: &ast::Table,
+	prefs: &pref::Preferences,
+	mut source_files: vec[Box<ast::SourceFile>],
+	mut old_cgen: Box<old_c::Gen>,
+	mut dgen: Box<dgen::DGen>
+}
+
+impl CodeGen {
+	@[inline]
+	pub fn new(table: &ast::Table, prefs: &pref::Preferences, _: TargetBackend) Box<CodeGen> {
+		return box!(CodeGen{
+			table: table,
+			prefs: prefs,
+			old_cgen: old_c::Gen::new(table, prefs),
+			dgen: dgen::DGen::new()
+		});
+	}
+
+	pub fn gen_files(mut &self, source_files: vec[Box<ast::SourceFile>]) {
+		self.old_cgen.gen_files(source_files);
+		self.source_files = source_files;
+	}
+
+	// TODO: remove this function
+	pub fn get_output(mut &self) str {
+		return self.old_cgen.get_output();
+	}
+
+	fn get_compile_cmd(&self, output_c: str) str {
+		let mut cmd = fmt!(
+			"{} -o {} -w -D_DEFAULT_SOURCE ", self.prefs.cc, self.prefs.output
+		);
+
+		if (self.prefs.build_mode == .Library) {
+			cmd += " -c ";
+		}
+
+		if (self.prefs.is_release) {
+			cmd += " -O3 -fno-strict-aliasing -flto ";
+		} else {
+			cmd += " -g -no-pie ";
+		}
+
+		if (self.table.cflags.len > 0) {
+			cmd += self.table.cflags.join(" ") + " ";
+		}
+
+		if (self.table.objects.len > 0 and self.prefs.build_mode != .Library) {
+			cmd += self.table.objects.join(" ") + " ";
+		}
+
+		return cmd + output_c;
+	}
+
+	fn compile_extern_c_files(&self) {
+		// TODO: make object files instead
+		// for (cfile in self.table.cfiles_to_compile) {
+		// }
+	}
+
+	pub fn generate_executable(mut &self) {
+		let do_not_compile = self.prefs.output.ends_with(".c");
+		let output_c = if (do_not_compile) self.prefs.output else
+			fmt!("{}.output.c", self.prefs.src_name);
+
+		let ccode = self.get_output();
+		try fs::write_file(output_c, ccode) catch {
+			utils::compiler_error(
+				fmt!("error while generating the C output file `{}`:\n{}", output_c, err.msg)
+			);
+		};
+
+		if (!do_not_compile) {
+			let compile_cmd = self.get_compile_cmd(output_c);
+			self.vlog(compile_cmd);
+			let res = os::execute(compile_cmd);
+			if (res.exit_code != 0) {
+				utils::compiler_error(
+					fmt!(
+						"error while compiling the output file `{}`:\n{}",
+						self.prefs.output,
+						res.output
+					)
+				);
+			} elif (!self.prefs.keep_c) {
+				try fs::File::remove(output_c) catch {
+					utils::compiler_error(err.msg);
+				};
+			}
+		}
+	}
+
+	pub fn generate_library(mut &self) {
+		let output_d = fmt!("{}.d.glaz", self.prefs.src_name);
+		let dfile = self.dgen.gen_dfile(self.prefs.src_name, self.source_files);
+		try fs::write_file(output_d, dfile) catch {
+			utils::compiler_error(
+				fmt!("error while generating the declaration file `{}`:\n{}", output_d,
+				err.msg)
+			);
+		};
+
+		let output_c = fmt!("{}.output.c", self.prefs.src_name);
+		let ccode = self.get_output();
+		try fs::write_file(output_c, ccode) catch {
+			utils::compiler_error(
+				fmt!("error while generating the C output file `{}`:\n{}", output_c, err.msg)
+			);
+		};
+
+		let compile_cmd = self.get_compile_cmd(output_c);
+		self.vlog(compile_cmd);
+		let res = os::execute(compile_cmd);
+		if (res.exit_code != 0) {
+			utils::compiler_error(
+				fmt!(
+					"error while compiling the object file `{}`:\n{}",
+					self.prefs.output, res.output
+				)
+			);
+		} elif (!self.prefs.keep_c) {
+			try fs::File::remove(output_c) catch {
+				utils::compiler_error(err.msg);
+			};
+		}
+	}
+
+	fn vlog(&self, msg: str) {
+		if (self.prefs.is_verbose) {
+			console::eprintln(fmt!(">> {}", msg));
+		}
+	}
+}

@@ -1,0 +1,125 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::mem;
+
+const EOF: i32 = -1;
+const SEEK_END: i32 = 2;
+
+/// Writes `text` data to a file in `path`.
+pub fn write_file(path: str, text: str) ! {
+	let mut f = try File::open(path, "wb");
+	f.write_str(text);
+	f.close();
+}
+
+/// Reads the file in `path` and returns the contents.
+pub fn read_file(path: str) !str {
+	unsafe {
+		let mut fp = C::fopen(cast(path.cstr, charptr), c"rb");
+		if (fp == null) {
+			raise fmt!("read_file: failed to open file '{}'", path);
+		}
+
+		let seek = C::fseek(fp, 0, SEEK_END);
+		if (seek != 0) raise "read_file: fseek failed";
+
+		let fsize = C::ftell(fp);
+		if (fsize < 0) raise "read_file: ftell failed";
+
+		C::rewind(fp);
+
+		let allocate = cast(fsize, i32);
+		// On some systems C::ftell can return values in the 64-bit range
+		// that, when cast to `i32`, can result in values below 0.
+		if (cast(allocate, i64) < fsize) {
+			raise fmt!("{} cast to i32 results in {}", fsize, cast(fsize, i32));
+		}
+
+		let mut cstr = cast(mem::alloc(allocate + 1), *u8);
+		let nelements = C::fread(cstr, 1, allocate, fp);
+
+		let is_eof, is_error = C::feof(fp), C::ferror(fp);
+		if (is_eof == 0 and is_error != 0) {
+			mem::free(cstr);
+			raise "read_file: fread failed";
+		}
+
+		cstr[nelements] = 0;
+		_ = C::fclose(fp);
+		return str::with_len2(cstr, nelements);
+	}
+}
+
+pub struct File {
+	mut f: *C::FILE,
+	mut is_opened: bool
+}
+
+impl File {
+	pub fn open(path: str, mode: str = "r") !File {
+		let f = unsafe { C::fopen(cast(path.cstr, charptr), cast(mode.cstr, charptr)) };
+		if (f == null) {
+			raise fmt!("File::open: failed to open file '{}'", path);
+		}
+		return File{
+			f: f,
+			is_opened: true
+		};
+	}
+
+	/// Removes file in `path`.
+	pub fn remove(path: str) ! {
+		if (unsafe { C::remove(cast(path.cstr, charptr)) == -1 }) {
+			raise fmt!(
+				"File::remove: failed to remove '{}': {}",
+				path, src::strerr_from_errno()
+			);
+		}
+	}
+
+	/// Reads at most max_size bytes from the file and writes it into ptr.
+	/// Returns the amount of bytes read or an error.
+	@[inline]
+	pub fn read_into_ptr(&self, mut ptr: rawptr, max_size: i32) !i32 {
+		return try fread(ptr, 1, max_size, self.f);
+	}
+
+	/// Writes `size` bytes to the file, starting from the address in `data`.
+	/// NOTE: write_ptr is unsafe and should be used carefully, since if you
+	/// pass invalid pointers to it, it will cause your programs to segfault.
+	@[inline; unsafe]
+	pub fn write_ptr(mut &self, data: rawptr, size: i32) i32 {
+		return unsafe { C::fwrite(data, 1, cast(size, usize), self.f) };
+	}
+
+	/// Writes the string `s` into the file.
+	@[inline]
+	pub fn write_str(mut &self, s: str) {
+		unsafe { _ = C::fputs(cast(s.cstr, charptr), self.f); }
+	}
+
+	/// Writes the string `s` into the file, and appends a '\n' character.
+	pub fn writeln(mut &self, s: str = "") {
+		self.write_str(s);
+		self.write_str("\n");
+	}
+
+	/// Writes any buffered unwritten data left in the file stream.
+	pub fn flush(mut &self) {
+		if (!self.is_opened) return;
+		unsafe { _ = C::fflush(self.f); }
+	}
+
+	/// Closes the current file.
+	pub fn close(mut &self) {
+		if (!self.is_opened) {
+			return;
+		}
+		unsafe {
+			_ = C::fflush(self.f);
+			_ = C::fclose(self.f);
+		}
+		self.is_opened = false;
+	}
+}

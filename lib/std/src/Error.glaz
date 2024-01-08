@@ -1,0 +1,29 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+#define OK_RES_VOID (Result__void){.ok=true}
+#define OK_RES(TName, val) (TName){.value=(val), .ok=true}
+#define ERR_RES(TName, _msg, _code) (TName){.err=(std__Error){.msg=(_msg), .code=(_code)}, .ok=false}
+
+use src::process;
+use src::backtrace;
+use src::console::{eprint, eprintln};
+
+@[special_type(name="error")]
+struct Error {
+	pub msg: str,
+	pub code: i32
+}
+
+impl Error {
+	fn panic(&self) {
+		eprint("panic: unhandled error: ");
+		eprintln(self.msg);
+		backtrace::print();
+		process::exit(1);
+	}
+
+	fn to_str(&self) str {
+		return fmt!("Error(message: \"{}\", code: {})", self.msg, self.code);
+	}
+}

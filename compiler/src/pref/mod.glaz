@@ -1,0 +1,262 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::{os, fs, path, env, process};
+use std::console::eprintln;
+
+use src::{utils, codegen};
+
+const VERSION: str = "glazc v0.1.0b";
+
+const GLAZ_HOME: str = path::join(env::HOME_DIR, ".glaz_lang");
+const GLAZ_PATH: str = path::join(GLAZ_HOME, "glaz_path.txt");
+
+// Fetch option by param.
+fn option(args: &[str], param: str, def: str = "") str {
+	for (i, arg in args) {
+		if (arg == param) {
+			if (i + 1 < args.len) {
+				return args[i + 1];
+			} else {
+				break;
+			}
+		}
+	}
+	return def;
+}
+
+pub enum BuildMode {
+	Binary, // default; binary output
+	Library, // library output
+	Test // run tests
+}
+
+pub struct CPUInfo {
+	pub is_little_endian: bool,
+	pub is_big_endian: bool,
+	pub is_32bit: bool,
+	pub is_64bit: bool
+}
+
+pub struct Preferences {
+	pub mut compiler_dir: str,
+	pub mut lib_path: str,
+	pub mut src_name: str,
+	pub mut source_files: vec[str],
+	pub mut flags: vec[str],
+
+	pub mut os: OS,
+	pub mut cpu_info: CPUInfo,
+	pub mut backend: codegen::TargetBackend = .C,
+	pub mut build_mode: BuildMode,
+	pub mut cc: str = "cc",
+	pub mut output: str,
+
+	pub mut check: bool,
+	pub mut check_syntax: bool,
+	pub mut is_release: bool,
+	pub mut is_verbose: bool,
+	pub mut no_std: bool,
+	pub mut keep_c: bool,
+
+	// experimental flags
+	pub mut owner_check: bool,
+	pub mut is_autodrop: bool,
+	pub mut new_c_backend: bool
+}
+
+impl Preferences {
+	pub fn new(args: vec[str]) Box<Preferences> {
+		let mut p = box!(Preferences{
+			os: get_os_from_host(),
+			cpu_info: CPUInfo{
+				is_little_endian: os::is_little_endian(),
+				is_big_endian: os::is_big_endian(),
+				is_32bit: os::is_32bit(),
+				is_64bit: os::is_64bit()
+			}
+		});
+		p.load_compiler_dir();
+		let source_files = p.parse_args(args);
+		if (!p.no_std) {
+			p.load_stdlib();
+		}
+		extend!(p.source_files, source_files);
+		return p;
+	}
+
+	fn parse_args(mut &self, args: vec[str]) vec[str] {
+		let mut source_files = vec[str]::new();
+		for (mut i in 0..args.len) {
+			let arg = args[i];
+			let current_args = &args[i:];
+			switch (arg) {
+				"--define", "-d" => {
+					if (current_args.len > 1) {
+						let flag = option(current_args, arg);
+						if (!utils::is_upper_case(flag)) {
+							utils::compiler_error(
+								fmt!("flag `{}` should have a upper case name", flag)
+							);
+						} elif (flag.match_glob("_*_")) {
+							utils::compiler_error(
+								fmt!("this form of declaration is reserved for the compiler: `{}`",
+								flag)
+							);
+						} elif (flag in self.flags) {
+							utils::compiler_error(fmt!("duplicate flag `{}`", flag));
+						}
+						push!(self.flags, flag);
+						i++;
+					} else {
+						utils::compiler_error(fmt!("`{}` requires a name as argument", arg));
+					}
+				}
+				"--src-name" => {
+					if (current_args.len > 1) {
+						self.src_name = option(current_args, arg);
+						i++;
+					} else {
+						utils::compiler_error("`--src-name` requires a name as argument");
+					}
+				}
+				"-b", "--backend" => {
+					if (current_args.len > 1) {
+						let b = option(current_args, arg);
+						self.backend = try codegen::backend_from_str(b) catch {
+							utils::compiler_error(err.msg);
+						};
+						i++;
+					} else {
+						utils::compiler_error(fmt!("`{}` requires a name as argument", arg));
+					}
+				}
+				"--os" => {
+					if (current_args.len > 1) {
+						let os_name = option(current_args, arg);
+						self.os = try get_os_from_string(os_name) catch {
+							utils::compiler_error(err.msg);
+						};
+						i++;
+					} else {
+						utils::compiler_error("`--os` requires a OS name as argument");
+					}
+				}
+				"-cc", "--custom-compiler" => {
+					if (current_args.len > 1) {
+						let cc_name = option(current_args, arg);
+						if (os::execute(cc_name + " --version").exit_code != 0) {
+							utils::compiler_error(fmt!(
+								"apparently `{}` is not installed", cc_name
+							));
+						}
+						self.cc = cc_name;
+						i++;
+					} else {
+						utils::compiler_error("`--os` requires a OS name as argument");
+					}
+				}
+				"--output", "-o" => {
+					if (current_args.len > 1) {
+						self.output = option(current_args, arg);
+						if (path::is_dir(self.output)) {
+							utils::compiler_error(fmt!("{}: `{}` is a directory", arg, self.output));
+						}
+						i++;
+					} else {
+						utils::compiler_error(fmt!("`{}` requires a filename as argument", arg));
+					}
+				}
+				"--lib" => self.build_mode = .Library;
+				"--test" => self.build_mode = .Test;
+				"--release" => self.is_release = true;
+				"--verbose" => self.is_verbose = true;
+				"--check" => self.check = true;
+				"--check-syntax" => self.check_syntax = true;
+				"--no-std" => self.no_std = true;
+				"--keep-c" => self.keep_c = true;
+				"--version" => {
+					eprintln(VERSION);
+					process::exit(0);
+				}
+
+				// -- experimental flags ----------------
+				/* 1. */ "--autodrop" => self.is_autodrop = true;
+				/* 2. */ "--owner-check" => self.owner_check = true;
+				/* 3. */ "--new-c-backend" => self.new_c_backend = true;
+				// --------------------------------------
+
+				else => {
+					if (arg.ends_with(".glaz")) {
+						if (!path::exists(arg)) {
+							utils::compiler_error(fmt!("`{}` doesn't exist", arg));
+						}
+						push!(source_files, arg);
+					} elif (arg.starts_with("--")) {
+						utils::compiler_error(fmt!("unknown option `{}`", arg));
+					} else {
+						utils::compiler_error(fmt!("unknown argument `{}`", arg));
+					}
+				}
+			}
+		}
+
+		if (source_files.len == 0) {
+			utils::compiler_error("0 input files");
+		}
+
+		if (self.src_name.len == 0) {
+			self.src_name = "main";
+			self.output = "main";
+		}
+
+		if (self.output.len == 0) {
+			self.output = self.src_name;
+		}
+
+		if (self.build_mode == .Library) {
+			self.output += ".o";
+		} elif (self.build_mode == .Test) {
+			self.output = "unit-test";
+		}
+
+		return source_files;
+	}
+
+	@[inline]
+	fn load_stdlib(mut &self) {
+		push!(self.source_files, path::join(self.lib_path, "std", "std.d.glaz"));
+	}
+
+	fn vlog(&self, msg: str) {
+		if (self.is_verbose) {
+			eprintln(fmt!(">> {}", msg));
+		}
+	}
+
+	fn load_compiler_dir(mut &self) {
+		if (path::is_file(GLAZ_PATH)) {
+			self.compiler_dir = try fs::read_file(GLAZ_PATH) catch {
+				utils::compiler_error(err.msg);
+			};
+		} else {
+			if (!path::is_dir(GLAZ_HOME)) {
+				try fs::Dir::create(GLAZ_HOME) catch {
+					utils::compiler_error(err.msg);
+				};
+			}
+			let mut exec_path = path::dirname(os::executable());
+			if (exec_path.ends_with("compiler")) {
+				exec_path = exec_path.all_before_last("compiler");
+			}
+			try fs::write_file(GLAZ_PATH, exec_path) catch {
+				utils::compiler_error(err.msg);
+			};
+			self.compiler_dir = exec_path;
+			try env::set("GLAZ_COMPILER_DIR", exec_path) catch {
+				utils::compiler_error(err.msg);
+			};
+		}
+		self.lib_path = path::join(self.compiler_dir, "lib");
+	}
+}

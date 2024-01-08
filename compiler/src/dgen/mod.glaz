@@ -1,0 +1,271 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+use src::ast;
+use src::utils;
+
+// .d.glaz generator :)
+pub struct DGen {
+	mut out: strings::Builder,
+	mut indent: i32,
+	mut empty_line: bool,
+	mut inside_extern: bool
+}
+
+impl DGen {
+    pub fn new() Box<DGen> {
+        return box!(DGen{});
+    }
+
+    pub fn gen_dfile(mut &self, name: str, source_files: vec[Box<ast::SourceFile>]) str {
+        self.writeln(fmt!("#compile \"@FILE_DIR/{}.o\"", name));
+        self.writeln(fmt!("mod {} {", name));
+        self.indent++;
+        for (&sf in source_files) {
+            if (sf.kind != .Default) continue;
+            if (sf.module != name) {
+                let submods = sf.module.split("::");
+                for (i in 1..submods.len) {
+                    let submod = submods[i];
+                    self.writeln(fmt!("pub mod {} {", submod));
+                    if (i < submods.len - 1) {
+                        self.indent++;
+                    }
+                }
+                self.indent++;
+                self.gen_decls(sf.decls);
+                self.indent--;
+                for (i in 1..submods.len) {
+                    self.writeln("}");
+                    if (i < submods.len - 1) {
+                        self.indent--;
+                    }
+                }
+            } else {
+                self.gen_decls(sf.decls);
+            }
+        }
+        self.indent--;
+        self.writeln("}");
+        return self.out.to_str();
+    }
+
+    fn gen_decls(mut &self, decls: vec[ast::Decl]) {
+        for (&decl in decls) switch (decl) is {
+            ast::Use => {}
+            ast::CHash => {
+                let c = decl as &ast::CHash;
+                self.write("#");
+                self.writeln(c.line);
+            }
+            ast::ExternBlock => {
+                self.inside_extern = true;
+                let eb = decl as &ast::ExternBlock;
+                self.writeln("extern {");
+                self.indent++;
+                self.gen_decls(eb.decls);
+                self.indent--;
+                self.writeln("}");
+                self.inside_extern = false;
+            }
+            ast::ModDecl => {
+                let m = decl as &ast::ModDecl;
+                if (m.is_pub and !self.inside_extern) {
+                    self.write("pub ");
+                }
+                self.writeln(fmt!("mod {} {", m.name));
+                self.indent++;
+                self.gen_decls(m.decls);
+                self.indent--;
+                self.writeln("}");
+            }
+            ast::ConstDecl => {
+                let c = decl as &ast::ConstDecl;
+                if (c.is_pub and !self.inside_extern) {
+                    self.write("pub ");
+                }
+                self.write(fmt!("const {}: {}", c.name, c.typ));
+                if (c.has_expr) {
+                    self.write(fmt!(" = {}", c.expr));
+                }
+                self.writeln(";");
+            }
+            ast::TypeDecl => {
+                let t = decl as &ast::TypeDecl;
+                if (t.is_pub) {
+                    self.write("pub ");
+                }
+                self.write(fmt!("type {} = ", t.name));
+                if (t.is_sumtype) {
+                    for (i, tt in t.types) {
+                        self.write(tt.to_str());
+                        if (i < t.types.len - 1) {
+                            self.write(" | ");
+                        }
+                    }
+                    if (t.has_default_expr) {
+                        self.write(fmt!(" = {}", t.default_expr));
+                    }
+                } else {
+                    self.write(t.parent.to_str());
+                }
+                self.writeln(";");
+            }
+            ast::StructDecl => {
+                let s = decl as &ast::StructDecl;
+                self.attrs(s.attrs);
+                if (s.is_pub and !self.inside_extern) {
+                    self.write("pub ");
+                }
+                if (s.is_union) {
+                    self.write("union ");
+                } else {
+                    self.write("struct ");
+                }
+                self.write(fmt!("{} ", s.name));
+                if (s.has_base) {
+                    self.write(fmt!(": {} ", s.base_expr));
+                }
+                self.writeln("{");
+                self.indent++;
+                for (i, &f in s.fields) {
+                    self.attrs(f.attrs);
+                    if (f.is_pub) {
+                        self.write("pub ");
+                    }
+                    if (f.is_mut) {
+                        self.write("mut ");
+                    }
+                    self.write(fmt!("{}: {}", f.name, f.typ));
+                    if (f.has_default_expr) {
+                        self.write(fmt!(" = {}", f.default_expr));
+                    }
+                    if (i < s.fields.len - 1) {
+                        self.writeln(",");
+                    } else {
+                        self.writeln();
+                    }
+                }
+                self.indent--;
+                self.writeln("}");
+            }
+            ast::EnumDecl => {
+                let e = decl as &ast::EnumDecl;
+                self.attrs(e.attrs);
+                if (e.is_pub and !self.inside_extern) {
+                    self.write("pub ");
+                }
+                self.writeln(fmt!("enum {} {", e.name));
+                self.indent++;
+                for (i, &f in e.fields) {
+                    self.write(f.name);
+                    if (f.has_expr) {
+                        self.write(fmt!(" = {}", f.expr));
+                    }
+                    if (i < e.fields.len - 1) {
+                        self.writeln(",");
+                    } else {
+                        self.writeln();
+                    }
+                }
+                self.indent--;
+                self.writeln("}");
+            }
+            ast::ImplDecl => {
+                let i = decl as &ast::ImplDecl;
+                self.writeln(fmt!("impl {} {", i.typ));
+                self.indent++;
+                self.gen_decls(i.decls);
+                self.indent--;
+                self.writeln("}");
+            }
+            ast::FnDecl => {
+                let f = decl as &ast::FnDecl;
+                self.attrs(f.attrs);
+                if (f.is_pub and !self.inside_extern) {
+                    self.write("pub ");
+                }
+                self.write(fmt!("fn {}(", f.name));
+                if (f.is_method) {
+                    if (f.rec_is_mut) {
+                        self.write("mut ");
+                    }
+                    if (f.rec_typ is ast::Reference) {
+                        self.write("&");
+                    }
+                    self.write("self");
+                    if (f.args.len > 0) {
+                        self.write(", ");
+                    }
+                }
+                for (i, &arg in f.args) {
+                    if (arg.is_mut) {
+                        self.write("mut ");
+                    }
+                    self.write(fmt!("{}: {}", arg.name, arg.typ));
+                    if (arg.has_default_expr) {
+                        self.write(fmt!(" = {}", arg.default_expr));
+                    }
+                    if (i < f.args.len - 1) {
+                        self.write(", ");
+                    }
+                }
+                if (f.is_variadic and f.is_extern) {
+                    if (f.args.len > 0) {
+                        self.write(", ");
+                    }
+                    self.write("...");
+                }
+                self.write(")");
+                if (f.ret_typ.neq(ast::VOID_T)) {
+                    self.write(fmt!(" {}", f.ret_typ));
+                }
+                self.writeln(";");
+            }
+            else => self.writeln("// unknown declaration");
+        }
+    }
+
+    fn attrs(mut &self, attrs: ast::Attrs) {
+        if (attrs.len() > 0) {
+            self.write("@[");
+            let mut x = 0;
+            for (_, &attr in attrs.attrs) {
+                self.write(attr.name);
+                if (attr.args.len > 0) {
+                    self.write("(");
+                    for (j, &arg in attr.args) {
+                        self.write(fmt!("{}={}", arg.name, arg.expr));
+                        if (j < attr.args.len - 1) {
+                            self.write(", ");
+                        }
+                    }
+                    self.write(")");
+                }
+                if (x < attrs.len() - 1) {
+                    self.write("; ");
+                }
+                x++;
+            }
+            self.writeln("]");
+        }
+    }
+
+    fn write(mut &self, s: str) {
+        if (self.indent > 0 and self.empty_line) {
+            self.out.write_str(utils::tabs(self.indent));
+        }
+        self.out.write_str(s);
+        self.empty_line = false;
+    }
+
+    fn writeln(mut &self, s: str = "") {
+        if (self.indent > 0 and self.empty_line) {
+            self.out.write_str(utils::tabs(self.indent));
+        }
+        self.out.writeln(s);
+        self.empty_line = true;
+    }
+}

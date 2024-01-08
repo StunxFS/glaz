@@ -1,0 +1,143 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+use src::ast::{self, Var, Scope, TypeKind};
+
+impl Gen {
+    fn autodrop(mut &self, sc: &Scope) {
+        if (self.prefs.is_autodrop and sc.objects.len > 0) {
+            let mut idx = sc.objects.len - 1;
+            self.writeln("// -----------------= autodrop =----------------- //");
+            while (idx >= 0) {
+                if (sc.objects[idx] is Var) {
+                    let obj = sc.objects[idx] as &Var;
+                    if (!obj.is_dropped and !obj.is_null and obj.is_local
+                        and !(obj.typ is ast::Reference or obj.typ.is_pointer()
+                            or obj.typ.is_primitive() or obj.typ.is_enum())
+                            and !obj.lifetime.is_moved) {
+                        let dropper = self.drop_value(obj.name, obj.typ);
+                        if (dropper.len > 0) {
+                            self.write(dropper);
+                        }
+                    }
+                }
+                idx--;
+            }
+            self.empty_line = true;
+            self.writeln("// ---------------------------------------------- //");
+        }
+    }
+
+    fn type_is_pointer(&self, t: ast::Type) bool {
+        if (t is ast::Optional) {
+            return self.type_is_pointer(t.parent());
+        }
+        if (t is ast::Pointer or t is ast::Reference) {
+            return true;
+        }
+        return false;
+    }
+
+    fn drop_value(mut &self, name: str, typ: ast::Type, ref: bool = true) str {
+        let mut ts = typ.ts();
+        let mut sb = strings::Builder::new(100);
+        if (typ is ast::Optional) {
+            if (!self.type_is_pointer(typ)) {
+                sb.writeln(
+                    fmt!("std__mem__free({}); // dropping optional value", name)
+                );
+            }
+        } elif (ts.has_method("drop")) {
+            sb.write_str(fmt!("{}__drop(", ts.gname));
+            if (ref) {
+                sb.write_str("&");
+            }
+            sb.writeln(fmt!("{}); // dropping value", name));
+        } elif (ts.kind in vec[TypeKind]{.Struct, .Union, .Tuple}) {
+            if (!ts.has_drop) {
+                ts.has_drop = true;
+                self.gen_auto_drop_method(ts);
+            }
+            sb.write_str(fmt!("{}__drop(", ts.gname));
+            if (ref) {
+                sb.write_str("&");
+            }
+            sb.writeln(fmt!("{}); // dropping value with auto-gen `drop`", name));
+        } elif (ts.kind == .BoxT) {
+            let et = (ts.info as &ast::BoxInfo).elem_typ;
+            if (!(et is ast::Reference or et.is_pointer() or et.is_primitive() or et.is_enum())) {
+                sb.write_str(self.drop_value("*" + name, et, false));
+            }
+            sb.writeln(fmt!("std__mem__free({}); // dropping boxed value", name));
+        } elif (ts.kind == .Vector) {
+            let elem_typ = (ts.info as &ast::VectorInfo).elem_typ;
+            if (!(elem_typ is ast::Reference or elem_typ.is_pointer())) {
+                if (!ts.has_drop) {
+                    ts.has_drop = true;
+                    self.gen_auto_vector_drop_method(ts);
+                }
+                sb.write_str(fmt!("{}__drop(", ts.gname));
+                if (ref) {
+                    sb.write_str("&");
+                }
+                sb.writeln(fmt!("{});", name));
+            }
+        } elif (ts.kind == .Map) {
+            sb.write_str("std__Map__drop(");
+            if (ref) {
+                sb.write_str("&");
+            }
+            sb.writeln(fmt!("{});", name));
+        }
+        return sb.to_str();
+    }
+
+    fn gen_auto_vector_drop_method(mut &self, ts: &ast::TypeSymbol) {
+        let mut sb = strings::Builder::new(100);
+        let elem_typ = (ts.info as &ast::VectorInfo).elem_typ;
+        let ecstr = elem_typ.to_cstr();
+
+        self.helpers_definitions.writeln(
+            fmt!("void {}__drop({}* value); // auto-generated", ts.gname, ts.gname)
+        );
+        sb.writeln(fmt!("void {}__drop({}* value) {", ts.gname, ts.gname));
+        if (!(elem_typ.is_primitive() or elem_typ.is_enum()
+            or elem_typ is ast::Reference or elem_typ.is_pointer())) {
+            sb.writeln("    for (i32 i = 0; i < value->len; ++i) {");
+            sb.writeln(fmt!("        {}* elem = CAST(value->data, {}*) + i;", ecstr, ecstr));
+            sb.write_str(fmt!("        {}", self.drop_value("elem", elem_typ, false)));
+            sb.writeln("    }");
+        }
+        sb.writeln("    std__Vec__drop(value);");
+        sb.writeln("}\n");
+        self.helpers.write_str(sb.to_str());
+    }
+
+    fn gen_auto_drop_method(mut &self, ts: &ast::TypeSymbol) {
+        let mut sb = strings::Builder::new(100);
+        self.helpers_definitions.writeln(
+            fmt!("void {}__drop({}* value); // auto-generated", ts.gname, ts.gname)
+        );
+        sb.writeln(fmt!("void {}__drop({}* value) {", ts.gname, ts.gname));
+        let sinfo = ts.info as &ast::StructInfo;
+        if (let mut base_ts = sinfo.base_ts()) {
+            if (!base_ts.has_drop) {
+                base_ts.has_drop = true;
+                self.gen_auto_drop_method(base_ts);
+            }
+            sb.writeln(
+                fmt!("    {}__drop(&value->base);", base_ts.gname)
+            );
+        }
+        for (&f in ts.fields) {
+            if (!(f.typ is ast::Reference or f.typ.is_pointer() or f.typ.is_primitive()
+                or f.typ.is_enum())) {
+                sb.write_str("    " + self.drop_value("value->" + f.name, f.typ));
+            }
+        }
+        sb.writeln("}\n");
+        self.helpers.write_str(sb.to_str());
+    }
+}

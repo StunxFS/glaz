@@ -1,0 +1,138 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+#include <sys/utsname.h>
+
+use src::{mem, path, strings, panic};
+
+extern {
+	struct utsname {
+		sysname: charptr,
+		nodename: charptr,
+		release: charptr,
+		version: charptr,
+		machine: charptr
+	}
+
+	fn uname(name: *utsname) i32;
+	fn isatty(fd: i32) i32;
+	fn readlink(path: charptr, buf: charptr, len: i32) i32;
+	fn symlink(path1: charptr, path2: charptr) i32;
+}
+
+/// Make a symbolic link (`dest`) to a file (`orig`).
+/// If something goes wrong, `symlink` returns an error.
+@[inline]
+pub fn symlink(orig: str, dest: str) ! {
+	if (unsafe { C::symlink(cast(orig.cstr, charptr), cast(dest.cstr, charptr)) != 0 }) {
+		raise fmt!("symlink: {}", src::strerr_from_errno());
+	}
+}
+
+/// Execute `cmd` and returns the result code.
+/// NOTE: If you want to get the output as well, you can use the `execute`
+/// function instead
+@[inline]
+pub fn system(cmd: str) i32 {
+	return unsafe { C::system(cast(cmd.cstr, charptr)) };
+}
+
+/// Returns true if the `fd` file descriptor is open and refers to a
+/// terminal
+@[inline]
+pub fn is_atty(fd: i32) i32 {
+	return unsafe { C::isatty(fd) };
+}
+
+struct Uname {
+	pub sysname: str,
+	pub nodename: str,
+	pub release: str,
+	pub version: str,
+	pub machine: str
+}
+
+pub fn uname() Uname {
+	let mut u = Uname{};
+	unsafe {
+		let mut d = cast(mem::alloc(cast(sizeof!(C::utsname), i32)), *C::utsname);
+		if (C::uname(d) == 0) {
+			u = Uname{
+				nodename: str::new_clone(d.*.nodename),
+				sysname: str::new_clone(d.*.sysname),
+				release: str::new_clone(d.*.release),
+				version: str::new_clone(d.*.version),
+				machine: str::new_clone(d.*.machine)
+			};
+		} else {
+			panic(fmt!("os::uname(): {}", src::strerr_from_errno()));
+		}
+		mem::free(d);
+	}
+	return u;
+}
+
+@[inline]
+fn popen(path: str) *C::FILE {
+	return unsafe { C::popen(cast(path.cstr, charptr), c"r") };
+}
+
+struct Result {
+	pub exit_code: i32,
+	pub output: str
+}
+
+/// Starts the specified command, waits for it to complete, and returns
+/// both its output and the exit code.
+pub fn execute(cmd: str) Result {
+	let pcmd = if (cmd.contains("2>")) cmd else fmt!("{} 2>&1", cmd);
+
+	let f = popen(pcmd);
+	if (f == null) {
+		return Result{
+			exit_code: -1,
+			output: fmt!("execute(\"{}\") failed", cmd)
+		};
+	}
+
+	let mut res = strings::Builder::new(1024);
+	defer unsafe { res.drop(); }
+
+	let buf = [u8; 4096]::new();
+	let mut pbuf: *u8 = unsafe { &buf[0] };
+	while (unsafe { C::fgets(cast(pbuf, charptr), 4096, f) != 0 }) {
+		res.write_str(str::new(unsafe { cast(pbuf, charptr) }));
+	}
+
+	let soutput = res.to_str();
+	let exit_code = unsafe { C::pclose(f) };
+
+	return Result{
+		exit_code: exit_code,
+		output: soutput
+	};
+}
+
+/// Returns the path name of the executable that started the current
+/// process.
+pub fn executable() str {
+	let mut m = unsafe { cast(mem::calloc(path::MAX_PATH_LEN), charptr) };
+	defer unsafe { mem::free(m); }
+
+	let count = unsafe { C::readlink(c"/proc/self/exe", m, path::MAX_PATH_LEN) };
+	if (count < 0) {
+		panic("executable: failed at reading `/proc/self/exe` to get executable path");
+	}
+
+	return str::new_clone(m);
+}
+
+/// Returns the current user operating system name.
+@[inline]
+pub fn user_os() str {
+	$if (_LINUX_) {
+		return "linux";
+	} $else {
+		return "unknown";
+	}
+}

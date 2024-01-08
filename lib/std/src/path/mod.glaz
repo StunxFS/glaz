@@ -1,0 +1,172 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::{mem, strings};
+
+const F_OK: i32 = 0;
+const X_OK: i32 = 1;
+const W_OK: i32 = 2;
+const R_OK: i32 = 4;
+
+const S_IFMT: i32  = 0xF000; // type of file
+const S_IFDIR: i32 = 0x4000; // directory
+const S_IFLNK: i32 = 0xA000; // link
+
+pub const PATH_SEPARATOR: str = "/";
+pub const PATH_SEPARATOR_B: u8 = '/';
+pub const PATH_DELIMITER: str = ":";
+
+pub const MAX_PATH_LEN: i32 = 4096;
+
+/// Returns true if `path` (file or directory) exists.
+@[inline]
+pub fn exists(path: str) bool {
+	return unsafe { C::access(cast(path.cstr, charptr), F_OK) != -1 };
+}
+
+/// Returns `true` if `path` is executable.
+@[inline]
+pub fn is_executable(path: str) bool {
+	return unsafe { C::access(cast(path.cstr, charptr), X_OK) != -1 };
+}
+
+/// Returns `true` if `path` is writable.
+@[inline]
+pub fn is_writable(path: str) bool {
+	return unsafe { C::access(cast(path.cstr, charptr), W_OK) != -1 };
+}
+
+/// Returns `true` if `path` is readable.
+@[inline]
+pub fn is_readable(path: str) bool {
+	return unsafe { C::access(cast(path.cstr, charptr), R_OK) != -1 };
+}
+
+/// Returns true if `path` is a directory.
+pub fn is_dir(path: str) bool {
+	let statbuf = C::stat{};
+	if (unsafe { C::fn_stat(cast(path.cstr, charptr), &statbuf) != 0 }) {
+		return false;
+	}
+	return (cast(statbuf.st_mode, i32) & S_IFMT) == S_IFDIR;
+}
+
+/// Returns true if `path` is a file.
+@[inline]
+pub fn is_file(path: str) bool {
+	return exists(path) and !is_dir(path);
+}
+
+/// Returns `true` if path is absolute.
+@[inline]
+pub fn is_absolute(path: str) bool {
+	return path.len > 0 and path[0] == '/';
+}
+
+/// Returns a boolean indicating whether `path` is a link.
+pub fn is_link(path: str) bool {
+	let statbuf = C::stat{};
+	if (unsafe { C::lstat(cast(path.cstr, charptr), &statbuf) != 0 }) {
+		return false;
+	}
+	return (cast(statbuf.st_mode, i32) & S_IFMT) == S_IFLNK;
+}
+
+/// Returns the full absolute path for `fpath`, with all relative ../../,
+/// symlinks and so on resolved.
+pub fn realpath(fpath: str) str {
+	let mut fullpath = unsafe { mem::calloc(MAX_PATH_LEN) };
+	let ret = unsafe { C::realpath(cast(fpath.cstr, charptr), cast(fullpath, charptr)) };
+	if (ret == 0) {
+		unsafe { mem::free(fullpath); }
+		return fpath.clone();
+	}
+	return str::new(ret);
+}
+
+/// Returns all but the last element of path, typically the path's directory.
+/// After dropping the final element, trailing slashes are removed.
+/// If the path is empty, dirname returns ".".
+/// If the path consists entirely of separators, dirname returns a single separator.
+/// The returned path does not end in a separator unless it is the root directory.
+pub fn dirname(path: str) str {
+	if (path == "") {
+		return ".";
+	}
+
+	let pos = path.last_index(PATH_SEPARATOR);
+	if (pos < 0) {
+		return ".";
+	} elif (pos == 0 and PATH_SEPARATOR == "/") {
+		return "/";
+	}
+	return path[:pos];
+}
+
+/// Returns the last element of path. Trailing path separators are removed
+/// before extracting the last element.
+/// If the path is empty, basename returns ".".
+/// If the path consists entirely of separators, basename returns a single separator.
+pub fn basename(path: str) str {
+	if (path == "") return ".";
+
+	if (path == PATH_SEPARATOR) {
+		return PATH_SEPARATOR;
+	}
+
+	if (path.ends_with(PATH_SEPARATOR)) {
+		let path2 = path[:path.len - 1];
+		let pos = path2.last_index(PATH_SEPARATOR);
+		if (pos < 0) {
+			return path2.clone();
+		}
+		return path2[pos + 1:];
+	}
+
+	let pos = path.last_index(PATH_SEPARATOR);
+	if (pos < 0) {
+		return path.clone();
+	}
+	return path[pos + 1:];
+}
+
+/// Returns all characters found after the last occurence of `PATH_SEPARATOR`.
+/// NOTE: file extension is included.
+@[inline]
+pub fn filename(path: str) str {
+	return path.all_after_last(PATH_SEPARATOR);
+}
+
+/// Returns the file name extension used by path. The extension is the suffix
+/// beginning at the final dot in the final slash-separated element of path;
+/// it is empty if there is no dot.
+pub fn extension(path: str) str {
+	let mut i = path.len - 1;
+	while (i >= 0 and path[i] != PATH_SEPARATOR_B) {
+		if (path[i] == '.') {
+			return path[i:];
+		}
+		i--;
+	}
+	return "";
+}
+
+/// Splits a pathname.
+@[inline]
+pub fn split(path: str) vec[str] {
+	return path.split(PATH_SEPARATOR);
+}
+
+/// Returns a path as string from input string argument(s) using a platform
+/// specific `PATH_SEPARATOR`.
+@[inline]
+pub fn join(base_: str, dirs: ...str) str {
+	let mut sb = strings::Builder::new(base_.len + dirs.len * 50);
+	let sbase = base_.trim_right("\\/");
+	sb.write_str(sbase);
+	for (d in dirs) {
+		sb.write_str(PATH_SEPARATOR);
+		sb.write_str(d);
+	}
+	return sb.to_str();
+}

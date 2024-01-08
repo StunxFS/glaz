@@ -1,0 +1,1495 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::conv;
+
+use src::tokens::Kind;
+use src::ast::{self, TypeKind };
+
+fn slice_to_vec(sca: &[glazc::ast::CallArg]) vec[glazc::ast::CallArg] {
+	let mut ve = vec[glazc::ast::CallArg]::new();
+	for (v in sca) {
+		push!(ve, v);
+	}
+	return ve;
+}
+
+impl Checker {
+	fn check_expr(mut &self, mut expr: &ast::Expr) ast::Type {
+		switch (expr) is {
+			ast::ArrayDecompose => {
+				let mut ad = expr as &ast::ArrayDecompose;
+				let ts = self.check_expr(&ad.expr).ts();
+				if (ts.kind != .Vector) {
+					self.error("decomposition can only be used on arrays", ad.expr.pos());
+					return ast::VOID_T;
+				}
+				ad.typ = (ts.info as &ast::VectorInfo).elem_typ.variadic();
+				return ad.typ;
+			}
+			ast::UnsafeExpr => {
+				let mut u = expr as &ast::UnsafeExpr;
+				self.inside_unsafe = true;
+				u.typ = self.check_expr(&u.expr);
+				self.inside_unsafe = false;
+				return u.typ;
+			}
+			ast::NullLiteral => {
+				(expr as &ast::NullLiteral).typ = self.table.null_t;
+				return self.table.null_t;
+			}
+			ast::BoolLiteral => {
+				(expr as &ast::BoolLiteral).typ = self.table.bool_t;
+				return self.table.bool_t;
+			}
+			ast::CharLiteral => {
+				let mut c = expr as &ast::CharLiteral;
+				if (!c.is_byte and self.expected_type.neq(ast::VOID_T)) {
+					c.is_byte = self.expected_type.eq(self.table.u8_t);
+				}
+				c.typ = if (c.is_byte) self.table.u8_t else self.table.rune_t;
+				return c.typ;
+			}
+			ast::IntegerLiteral => {
+				let mut f = expr as &ast::IntegerLiteral;
+				self.check_integer_limit(f);
+				f.typ = self.table.untyped_int_t;
+				return f.typ;
+			}
+			ast::FloatLiteral => {
+				let mut f = expr as &ast::FloatLiteral;
+				f.typ = self.table.untyped_float_t;
+				return f.typ;
+			}
+			ast::StringLiteral => {
+				let mut s = expr as &ast::StringLiteral;
+				s.typ = if (s.is_cstr) self.table.charptr_t else self.table.str_t;
+				return s.typ;
+			}
+			ast::ParExpr => {
+				let mut p = expr as &ast::ParExpr;
+				if (p.expr is ast::ParExpr) {
+					self.error("redundant parentheses are used", &p.pos);
+				}
+				p.typ = self.check_expr(&p.expr);
+				return p.typ;
+			}
+			ast::Ident => return self.check_ident(expr as &ast::Ident);
+			ast::BaseExpr => {
+				let mut s = expr as &ast::BaseExpr;
+				s.typ = ast::VOID_T;
+				if (self.inside_impl) {
+					let ts = self.self_type.ts();
+					if (ts.kind == .Struct) {
+						let sinfo = ts.info as &ast::StructInfo;
+						if (let base_ts = sinfo.base_ts()) {
+							s.typ = ast::Type::new(base_ts).ref();
+						} else {
+							self.error("cannot use `base` here", &s.pos);
+							self.note(fmt!("struct `{}` has no base", ts.name));
+						}
+					} else {
+						self.error("cannot use `base` here", &s.pos);
+						self.note("it is only valid with structs");
+					}
+				} else {
+					self.error("cannot use `base` here", &s.pos);
+					self.note("it is only valid inside methods");
+				}
+				return s.typ;
+			}
+			ast::SelfExpr => {
+				let mut s = expr as &ast::SelfExpr;
+				s.typ = ast::VOID_T;
+				if (let rec = s.scope.?.lookup("self")) {
+					s.typ = rec.typ();
+				} else {
+					self.error("cannot use `self` here", &s.pos);
+					self.note("it is only valid inside methods");
+				}
+				return s.typ;
+			}
+			ast::CastExpr => return self.check_cast_expr(expr as &ast::CastExpr);
+			ast::UnaryExpr => return self.check_unary_expr(expr as &ast::UnaryExpr);
+			ast::BinaryExpr => return self.check_binary_expr(expr as &ast::BinaryExpr);
+			ast::PostfixExpr => return self.check_postfix_expr(expr as &ast::PostfixExpr);
+			ast::IndirectExpr => return self.check_indirect_expr(expr as &ast::IndirectExpr);
+			ast::IndexExpr => return self.check_index_expr(expr as &ast::IndexExpr);
+			ast::NullCoalescing => return self.check_null_coalescing(expr as &ast::NullCoalescing);
+			ast::NullCheckExpr => return self.check_null_check_expr(expr as &ast::NullCheckExpr);
+			ast::TupleLiteral => return self.check_tuple_literal(expr as &ast::TupleLiteral);
+			ast::StructLiteral => return self.check_struct_literal(expr as &ast::StructLiteral);
+			ast::ArrayLiteral => return self.check_array_literal(expr as &ast::ArrayLiteral);
+			ast::MapLiteral => return self.check_map_literal(expr as &ast::MapLiteral);
+			ast::CallExpr => return self.check_call_expr(expr as &ast::CallExpr);
+			ast::BuiltinCallExpr => return self.check_builtin_call(expr as &ast::BuiltinCallExpr);
+			ast::SelectorExpr => return self.check_selector_expr(expr as &ast::SelectorExpr);
+			ast::PathExpr => return self.check_path_expr(expr as &ast::PathExpr);
+			ast::TernaryExpr => return self.check_ternary_expr(expr as &ast::TernaryExpr);
+			ast::RangeExpr => return self.check_range_expr(expr as &ast::RangeExpr);
+			ast::TypeNode => {
+				return (expr as &ast::TypeNode).typ;
+			}
+			ast::TryExpr => return self.check_try_expr(expr as &ast::TryExpr);
+			ast::DotEnumExpr => return self.check_dot_enum_expr(expr as &ast::DotEnumExpr);
+			ast::EmptyExpr => {
+				self.error("parser bug: empty expression", expr.pos());
+				self.note("this should never happen, please report it");
+			}
+			else => {}
+		}
+		return ast::VOID_T;
+	}
+
+	fn check_unary_expr(mut &self, mut expr: &ast::UnaryExpr) ast::Type {
+		let mut rtyp = self.check_expr(&expr.right);
+		switch (expr.op) {
+			.Bang => {
+				if (rtyp.neq(self.table.bool_t)) {
+					self.error("`!` can only be used with booleans", &expr.pos);
+				}
+			}
+			.Amp => {
+				let right = expr.right.clear();
+				switch (right) is {
+					ast::BuiltinCallExpr => {
+						if ((right as &ast::BuiltinCallExpr).name == "box") {
+							self.error(
+								"cannot take the address of `box` builtin calls", &expr.pos
+							);
+						}
+					}
+					ast::NullLiteral => {
+						self.error(
+							"cannot take the address of the `null` literal", &expr.pos
+						);
+					}
+					ast::CastExpr => {
+						let ts = (right as &ast::CastExpr).expr.typ().ts();
+						if (ts.kind != .SumType) {
+							self.error(
+								"cannot take the address of a temporary value", expr.right.pos()
+							);
+						}
+					}
+					ast::IndexExpr => {
+						let i = right as &ast::IndexExpr;
+						let kind = i.left_typ.ts().kind;
+						if (i.left_typ.is_pointer() and !self.expected_type.is_pointer()) {
+							self.error("cannot reference a pointer indexing", &expr.pos);
+						} elif (kind == .Map) {
+							self.error("cannot take the address of map values", &expr.pos);
+						} elif (kind == .Array and !self.inside_unsafe) {
+							self.error(
+								"cannot reference a array outside `unsafe` block",
+								&expr.pos
+							);
+							self.note("arrays are stored on the stack");
+						}
+					}
+					else => {}
+				}
+				if (rtyp is ast::Reference) {
+					self.error("cannot take the address of other reference", &expr.pos);
+				}
+				let rts = rtyp.ts();
+				if (self.expected_type.neq(ast::VOID_T)) {
+					if (self.expected_type.is_pointer()) {
+						if (rts.kind == .BoxT) {
+							rtyp = (rts.info as &ast::BoxInfo).elem_typ.ptr();
+						} else {
+							rtyp = rtyp.ptr();
+						}
+					} else {
+						if (rts.kind == .BoxT) {
+							rtyp = (rts.info as &ast::BoxInfo).elem_typ.ref();
+						} else {
+							rtyp = rtyp.ref();
+						}
+					}
+				} else {
+					if (rts.kind == .BoxT) {
+						rtyp = (rts.info as &ast::BoxInfo).elem_typ.ref();
+					} else {
+						rtyp = self.untyped_to_real_type(rtyp).ref();
+					}
+				}
+			}
+			.Inc, .Dec => {
+				if (!rtyp.is_int()) {
+					self.error("`++`/`--` can only be used with numeric types", &expr.pos);
+				}
+				self.check_var_mutable(&expr.right);
+			}
+			.Minus => {
+				if (!rtyp.is_number() or rtyp !is ast::SimpleType) {
+					self.error("`-` operator can only be used with numeric types", &expr.pos);
+				} elif (rtyp.is_unsigned()) {
+					self.error(
+						fmt!("cannot apply unary operator `-` to type `{}`", rtyp), &expr.pos
+					);
+					self.note("unsigned values cannot be negated");
+				}
+			}
+			else => {}
+		}
+		expr.typ = rtyp;
+		return rtyp;
+	}
+
+	fn check_binary_expr(mut &self, mut expr: &ast::BinaryExpr) ast::Type {
+		let oet = self.expected_type;
+		let mut ltyp, mut rtyp = ast::VOID_T, ast::VOID_T;
+		if (expr.left is ast::DotEnumExpr and expr.right is ast::DotEnumExpr) {
+			self.error("unsupported operation", &expr.pos);
+			return ast::VOID_T;
+		} elif (expr.left is ast::DotEnumExpr or expr.left is ast::CharLiteral) {
+			rtyp = self.check_expr(&expr.right);
+			self.expected_type = rtyp;
+			ltyp = self.check_expr(&expr.left);
+		} else {
+			ltyp = self.check_expr(&expr.left);
+			self.expected_type = ltyp;
+			rtyp = self.check_expr(&expr.right);
+		}
+		let lts = ltyp.ts();
+		let rts = rtyp.ts();
+
+		if (ltyp.is_pointer() and expr.op in vec[Kind]{
+			.Plus, .Minus, .Mult, .Div, .Mod, .Xor, .Amp, .Pipe
+		}) {
+			if ((rtyp.is_pointer() and expr.op != .Minus)
+				or (!rtyp.is_pointer() and expr.op !in vec[Kind]{.Plus, .Minus})) {
+				self.error(
+					fmt!("invalid operator `{}` to `{}` and `{}`", expr.op, ltyp, rtyp),
+					&expr.pos
+				);
+			} elif (expr.op in vec[Kind]{.Plus, .Minus} and !self.inside_unsafe) {
+				self.error("pointer arithmetic is only allowed inside `unsafe` block", &expr.pos);
+			}
+		} elif (ltyp is ast::Reference and expr.op in vec[Kind]{
+			.Plus, .Minus, .Mult, .Div, .Mod, .Xor, .Amp, .Pipe
+		}) {
+			self.error("cannot use arithmetic with references", &expr.pos);
+		}
+
+		let mut return_type = ltyp;
+		switch (expr.op) {
+			.KeyIn, .KeyNotIn => {
+				switch (rts.kind) {
+					.Vector => {
+						let elem_typ = (rts.info as &ast::VectorInfo).elem_typ;
+						try self.check_compatible_types(ltyp, elem_typ) catch {
+							self.error(err.msg, expr.left.pos());
+						};
+						let ts = elem_typ.ts();
+						if (ts.kind in vec[TypeKind]{.Union, .Struct} and !ts.has_method("eq")) {
+							self.error("invalid use of `in` operator", &expr.pos);
+							self.note(
+								fmt!("type `{}` does not have comparison method `eq`", ts.name)
+							);
+						}
+					}
+					.Map => {
+						try self.check_compatible_types(ltyp, self.table.str_t) catch {
+							self.error(err.msg, expr.left.pos());
+						};
+					}
+					else => self.error("expected array or map value", &expr.pos);
+				}
+				expr.typ = self.table.bool_t;
+				return expr.typ;
+			}
+			.KeyIs, .KeyNotIs => {
+				if (lts.kind == .BoxT and rts.kind == .Struct and rtyp !is ast::Reference) {
+					let box_ts = (lts.info as &ast::BoxInfo).elem_typ.ts();
+					if (!self.is_sub_struct_of(rts, box_ts)) {
+						self.error(
+							fmt!("struct `{}` don't inherit from `{}`", rts.qualname(),
+							box_ts.qualname()), &expr.pos
+						);
+					}
+				} elif (lts.kind == .Struct and rts.kind == .Struct
+					and ltyp is ast::Reference and rtyp !is ast::Reference) {
+					if (!self.is_sub_struct_of(rts, lts)) {
+						self.error(
+							fmt!("struct `{}` don't inherit from `{}`", rts.qualname(),
+							lts.qualname()), &expr.pos
+						);
+					}
+				} elif (lts.kind != .SumType) {
+					self.error("expected sumtype value", expr.left.pos());
+				}
+				expr.typ = self.table.bool_t;
+				return expr.typ;
+			}
+			.Lshift, .Rshift => {
+				expr.typ = self.check_shift(ltyp, rtyp, expr.left.pos(), expr.right.pos());
+				return expr.typ;
+			}
+			.Plus, .Minus, .Mult, .Div, .Mod, .Xor, .Amp, .Pipe => {
+				let mut promoted_type = self.promote(ltyp, rtyp);
+				if (ltyp.is_pointer() and rtyp.is_pointer() and expr.op == .Minus) {
+					promoted_type = self.table.isize_t; // substract pointers
+				}
+				if (promoted_type.eq(ast::VOID_T)) {
+					self.error(fmt!("mismatched types `{}` and `{}`", ltyp, rtyp), &expr.pos);
+				} elif (promoted_type is ast::Optional or (!(promoted_type.is_primitive()
+					or promoted_type.is_pointer()
+					or promoted_type.ts().kind in vec[TypeKind]{.Str, .Enum}
+					or promoted_type is ast::Reference) and ltyp.eq(rtyp))) {
+					self.error(
+						fmt!("operator `{}` cannot be used with `{}`", expr.op, promoted_type),
+						&expr.pos
+					);
+				}
+				return_type = promoted_type;
+			}
+			.Gt, .Lt, .Ge, .Le => {
+				if (lts.kind in vec[TypeKind]{.Vector, .Array} and lts.kind == rts.kind) {
+					self.error("invalid operator", &expr.pos);
+				} elif (((ltyp.is_pointer() or ltyp is ast::Reference or ltyp is ast::Optional)
+					and rtyp.eq(self.table.null_t)) or (
+						(rtyp.is_pointer() or rtyp is ast::Reference or rtyp is ast::Optional)
+						and ltyp.eq(self.table.null_t))
+					) {
+					self.error(
+						fmt!(
+							"operator `{}` cannot be used with `{}` and `{}`",
+							expr.op, ltyp, rtyp
+						),
+						&expr.pos
+					);
+				}
+			}
+			.KeyAnd, .KeyOr => {
+				if (ltyp.neq(self.table.bool_t)) {
+					self.error(
+						fmt!("non-boolean expression in left operand for `{}`", expr.op),
+						expr.left.pos()
+					);
+				}
+				if (rtyp.neq(self.table.bool_t)) {
+					self.error(
+						fmt!("non-boolean expression in right operand for `{}`", expr.op),
+						expr.right.pos()
+					);
+				}
+				if (expr.left is ast::BinaryExpr) {
+					let el = expr.left as &ast::BinaryExpr;
+					if (el.op != expr.op and el.op in vec[Kind]{.KeyOr, .KeyAnd}) {
+						// use `(a and b) or c` instead of `a and b or c`
+						self.error("ambiguous boolean expression", &expr.pos);
+						self.help("use `()` to ensure correct order of operations");
+					}
+				}
+			}
+			else => {}
+		}
+		if ((ltyp.eq(self.table.bool_t) and rtyp.eq(self.table.bool_t)) and expr.op !in vec[Kind]{
+			.Eq, .Ne, .KeyAnd, .KeyOr, .Pipe, .Amp
+		}) {
+			self.error("booleans only support `==`, `!=`, `and`, `or`, `&` and `|`", &expr.pos);
+		} elif (
+			(ltyp.eq(self.table.str_t) and rtyp.eq(self.table.str_t))
+			and expr.op !in vec[Kind]{.Eq, .Ne, .Lt, .Gt, .Le, .Ge, .Plus}
+		) {
+			self.error(
+				"strings only support `==`, `!=`, `<`, `>`, `<=`, `>=`, and `+`", &expr.pos
+			);
+		}
+		try self.check_compatible_types(rtyp, return_type) catch {
+			self.error(err.msg, expr.right.pos());
+		};
+		self.expected_type = oet;
+		expr.typ = if (expr.op.is_relational()) self.table.bool_t else return_type;
+		return expr.typ;
+	}
+
+	fn check_postfix_expr(mut &self, mut expr: &ast::PostfixExpr) ast::Type {
+		let ltyp = self.check_expr(&expr.left);
+		if (expr.op in vec[Kind]{.Inc, .Dec}) {
+			if (!ltyp.is_number()) {
+				self.error("`++`/`--` can only be used with numeric types", &expr.pos);
+			}
+			self.check_var_mutable(&expr.left);
+		}
+		expr.typ = ltyp;
+		return ltyp;
+	}
+
+	fn check_call_expr(mut &self, mut expr: &ast::CallExpr) ast::Type {
+		expr.typ = ast::VOID_T;
+		switch (expr.left) is {
+			ast::Ident => {
+				let i = expr.left as &ast::Ident;
+				if (i.sym is ast::Function) {
+					let f = i.sym as &ast::Function;
+					if (f.is_main) {
+						self.error("cannot call to function `main`", &expr.pos);
+						return expr.typ;
+					}
+					expr.info = f;
+					expr.typ = self.check_call(f, expr);
+				} elif (i.is_obj) {
+					self.error("closures are not yet implemented", &expr.pos);
+				}
+				return expr.typ;
+			}
+			ast::SelectorExpr => {
+				let mut s = expr.left as &ast::SelectorExpr;
+				s.left_typ = self.check_expr(&s.left);
+
+				let mut found = false;
+				let mut ts = s.left_typ.ts();
+				if (ts.kind == .BoxT) {
+					ts = (ts.info as &ast::BoxInfo).elem_typ.ts();
+				}
+
+				let mut m = &ast::Function{};
+				if (let method = ts.find_method(s.field_name)) {
+					m = method;
+					found = true;
+				} elif (ts.kind == .Vector) {
+					ts = self.table.vec_type as &ast::TypeSymbol;
+					if (let method = ts.find_method(s.field_name)) {
+						m = method;
+						found = true;
+					}
+				} elif (ts.kind == .Map) {
+					ts = self.table.map_type as &ast::TypeSymbol;
+					if (let method = ts.find_method(s.field_name)) {
+						m = method;
+						found = true;
+					}
+				} elif (ts.kind == .Struct) {
+					let sinfo = ts.info as &ast::StructInfo;
+					if (sinfo.has_base) {
+						// inherited methods
+						let mut base_ts = sinfo.base_ts();
+						while (base_ts != null) {
+							if (let method = base_ts.?.find_method(s.field_name)) {
+								ts = base_ts.?;
+								m = method;
+								found = true;
+								s.require_cast = true;
+								s.cast_to_type = ast::Type::new(ts).ref();
+								break;
+							}
+							base_ts = (base_ts.?.info as &ast::StructInfo).base_ts();
+						}
+					}
+				}
+
+				if (found) {
+					expr.info = m;
+					if (s.field_name == "drop" and !self.inside_test and !self.inside_unsafe
+						and !(self.func.name == "drop" and self.func.is_method)) {
+						self.error("explicit use of destructor method", &s.field_pos);
+						self.help("consider using `drop` macro");
+					} elif (!m.is_pub and self.mods != ts.module) {
+						let is_protected = m.attrs.contains("protected");
+						let self_ts = self.self_type.ts();
+						if (!(is_protected and self.inside_impl and self_ts.kind == .Struct
+							and self.is_sub_struct_of(self_ts, ts))) {
+							self.error(
+								fmt!("method `{}.{}` is {}", ts.name, m.name,
+								if (is_protected) "protected" else "private"), &s.field_pos
+							);
+						}
+					} elif (m.is_method) {
+						if (s.left_typ is ast::Optional) {
+							self.error("optional value cannot be called directly", &expr.pos);
+							self.help("use the null-check syntax: `foo.?.method()`");
+							self.help("or use the null-coalescing operator: `(x ?? 5).method()`");
+						} elif (s.left_typ is ast::Pointer) {
+							if (m.rec_typ is ast::Reference) {
+								self.error("cannot use pointers as references", &expr.pos);
+								self.help("consider casting this pointer to a reference");
+							} else {
+								self.error("unexpected pointer type as receiver", &expr.pos);
+								self.help("consider dereferencing this pointer");
+							}
+						}
+					}
+					expr.typ = self.check_call(m, expr);
+				} elif (ts.kind != .Void) {
+					self.error(
+						fmt!("type `{}` has no method `{}`", ts.name, s.field_name),
+						&expr.pos
+					);
+					self.suggestion(s.field_name, ts.collect_method_names());
+				}
+			}
+			ast::PathExpr => {
+				let mut p = expr.left as &ast::PathExpr;
+				if (p.left_info is ast::TypeSymbol and p.is_unknown) {
+					let ts = p.left_info as &ast::TypeSymbol;
+					if (let af = ts.find(p.field_name)) {
+						p.is_unknown = false;
+						p.field_info = af.*;
+						let f = af as &ast::Function;
+						expr.info = f;
+						expr.typ = self.check_call(f, expr);
+					} elif (ts.kind != .Void) {
+						self.error(
+							fmt!(
+								"type `{}` has no associated function `{}`", ts.name, p.field_name
+							),
+							&p.field_pos
+						);
+					}
+				} elif (p.field_info is ast::Function) {
+					let f = p.field_info as &ast::Function;
+					expr.info = f;
+					expr.typ = self.check_call(f, expr);
+				} else {
+					self.error(
+						fmt!("expected function, found {}", p.field_info.kind()), &p.field_pos
+					);
+				}
+			}
+			else => self.error("invalid expression", &expr.pos);
+		}
+		return expr.typ;
+	}
+
+	fn check_call(mut &self, func: &ast::Function, mut expr: &ast::CallExpr) ast::Type {
+		let kind = func.kind();
+		if (func.is_unsafe and !self.inside_unsafe) {
+			self.warn(
+				fmt!("{} `{}` should be called inside `unsafe` block", kind, func.name),
+				&expr.pos
+			);
+		} elif (func.is_deprecated) {
+			self.warn(fmt!("{} `{}` is deprecated", kind, func.name), &expr.pos);
+		} elif (func.ret_typ is ast::Result and !(self.inside_try or self.inside_guard_expr)) {
+			self.error(fmt!("{} `{}` returns a result", kind, func.qualname()), &expr.pos);
+			self.help("should handle this with `try`");
+		} elif (func.attrs.contains("noreturn")) {
+			self.scope_returns = true;
+		}
+
+		let mut ret_typ = func.ret_typ;
+		// TODO: remove this code when `impl<T> vec[T] { ... }` is supported
+		if (func.is_method) {
+			let ts = func.rec_typ.ts();
+			if (ts.gname == "std__Vec" and func.name == "clone") {
+				// support .clone with arrays
+				let sss = expr.left.clear();
+				if (sss is ast::SelectorExpr) {
+					let ss = sss as &ast::SelectorExpr;
+					let ss_ts = ss.left_typ.ts();
+					if (ss_ts.kind == .Vector) {
+						ret_typ = ss.left_typ.deref();
+					}
+				}
+			}
+		}
+
+		// check mutable receiver
+		if (func.rec_is_mut) {
+			self.check_var_mutable(&expr.left);
+		}
+
+		let mut fn_args_len = func.args.len;
+		if (func.is_variadic and !func.is_extern) {
+			fn_args_len--;
+		}
+		if (fn_args_len < 0) {
+			fn_args_len = 0;
+		}
+
+		// named arguments
+		let mut error = false;
+		for (&arg in expr.args) {
+			if (arg.is_named) {
+				let mut found = false;
+				for (&arg_fn in func.args) {
+					if (arg_fn.name == arg.name) {
+						found = true;
+						if (!arg_fn.has_default_expr) {
+							self.error(fmt!("argument `{}` is not optional", arg.name), &arg.pos);
+						}
+					}
+				}
+				if (!found) {
+					if (!error) {
+						error = true;
+					}
+					self.error(
+						fmt!("{} `{}` does not have an argument called `{}`", kind, func.name,
+						arg.name), &arg.pos
+					);
+				}
+			}
+		}
+		if (error) {
+			return ret_typ;
+		}
+
+		// default exprs
+		if (func.has_named_args) {
+			let args_len = expr.real_args_len();
+			let mut args = slice_to_vec(&expr.args[:args_len]);
+			for (i in args_len..fn_args_len) {
+				let arg = func.args[i];
+				if (arg.has_default_expr) {
+					if (let carg = expr.get_named_arg(arg.name)) {
+						push!(args, ast::CallArg{
+							expr: carg.expr,
+							pos: carg.expr.pos().*
+						});
+					} else {
+						push!(args, ast::CallArg{
+							expr: arg.default_expr,
+							pos: arg.default_expr.pos().*
+						});
+					}
+				}
+			}
+			expr.args = args;
+		}
+
+		let expr_args_len = expr.real_args_len();
+		let expr_msg = fmt!("expected {} argument(s), not {}", fn_args_len, expr_args_len);
+		if (expr_args_len < fn_args_len) {
+			self.error(fmt!("too few arguments to {} `{}`", kind, func.name), &expr.pos);
+			self.note(expr_msg);
+			return ret_typ;
+		} elif (!func.is_variadic and expr_args_len > fn_args_len) {
+			self.error(fmt!("too many arguments to {} `{}`", kind, func.name), &expr.pos);
+			self.note(expr_msg);
+			return ret_typ;
+		}
+
+		let oet = self.expected_type;
+		for (i, mut &arg in expr.args) {
+			let arg_fn = if (func.is_variadic and i >= func.args.len - 1)
+				&func.args[func.args.len - 1] else &func.args[i];
+
+			if (func.is_variadic and arg.expr is ast::ArrayDecompose) {
+				if (i > func.args.len - 1) {
+					self.error(fmt!("too many arguments to {} `{}`", kind, func.name), &expr.pos);
+				}
+			}
+
+			self.expected_type = arg_fn.typ;
+			let call_arg_t = self.check_expr(&arg.expr);
+			self.expected_type = oet;
+
+			self.mark_value_as_moved(&arg.expr);
+
+			if (func.is_variadic and !func.is_extern and call_arg_t is ast::Variadic
+				and expr.args.len - 1 > i) {
+				self.error(
+					"when forwarding a variadic variable, it must be the final argument",
+					&arg.pos
+				);
+			}
+
+			if (arg_fn.is_mut and (arg_fn.typ is ast::Reference or arg_fn.typ.is_pointer())) {
+				self.check_var_mutable(&arg.expr);
+			}
+
+			if (!(func.is_variadic and func.is_extern and i >= func.args.len - 1)) {
+				try self.check_compatible_types(call_arg_t, arg_fn.typ) catch {
+					self.error(err.msg, &arg.pos);
+					self.note(fmt!("in argument `{}` of {} `{}`", arg_fn.name, kind, func.name));
+				};
+			}
+		}
+		return ret_typ;
+	}
+
+	fn check_indirect_expr(mut &self, mut expr: &ast::IndirectExpr) ast::Type {
+		let typ = self.check_expr(&expr.expr);
+		let ts = typ.ts();
+		if (!(typ is ast::Reference or typ is ast::Pointer or ts.kind == .BoxT)) {
+			self.error(fmt!("invalid indirect for `{}`", typ), &expr.pos);
+			if (typ.eq(self.table.rawptr_t)) {
+				self.help("consider casting this to a pointer type, e.g. `*u8`");
+			}
+			return typ;
+		} elif (typ.is_pointer() and !self.inside_unsafe) {
+			self.error(
+				"dereference of pointer is unsafe and requires `unsafe` block",
+				&expr.pos
+			);
+		}
+		expr.typ = if (ts.kind == .BoxT) (ts.info as &ast::BoxInfo).elem_typ else typ.deref();
+		return expr.typ;
+	}
+
+	fn check_index_expr(mut &self, mut expr: &ast::IndexExpr) ast::Type {
+		let t = self.check_expr(&expr.left);
+		let ts = t.ts();
+		let i = self.check_expr(&expr.index);
+		expr.left_typ = t;
+		switch (ts.kind) {
+			.Vector, .Array, .Slice => {
+				if (!i.is_int()) {
+					self.error(fmt!("expected integer type, found `{}`", i), expr.index.pos());
+				}
+				if (expr.index is ast::RangeExpr) {
+					if (ts.kind == .Slice) {
+						expr.typ = t;
+					} elif (ts.kind == .Vector) {
+						expr.typ = ast::Type::new(self.table.gmod.add_or_get_slice(
+							(ts.info as &ast::VectorInfo).elem_typ
+						));
+					} else {
+						expr.typ = ast::Type::new(self.table.gmod.add_or_get_slice(
+							(ts.info as &ast::ArrayInfo).elem_typ
+						));
+					}
+				} elif (ts.kind == .Vector) {
+					expr.typ = cast(ts.info, &ast::VectorInfo).elem_typ;
+				} elif (ts.kind == .Slice) {
+					expr.typ = cast(ts.info, &ast::SliceInfo).elem_typ;
+				} else {
+					expr.typ = cast(ts.info, &ast::ArrayInfo).elem_typ;
+				}
+			}
+			.Map => {
+				if (i.neq(self.table.str_t)) {
+					self.error(fmt!("expected type `str`, found `{}`", i), expr.index.pos());
+				}
+				expr.typ = (ts.info as &ast::MapInfo).val_typ;
+			}
+			else => {
+				if (!(t.is_pointer() or t.eq(self.table.str_t)) or t.eq(self.table.rawptr_t)) {
+					self.error(fmt!("type `{}` does not support indexing", t), &expr.pos);
+					self.note("only `str`, pointers, arrays, vectors and slices supports indexing");
+				} elif (!i.is_int()) {
+					self.error(fmt!("expected integer type, found `{}`", i), expr.index.pos());
+				} elif (t.is_pointer()) {
+					if (!self.inside_unsafe) {
+						self.error(
+							"pointer indexing is only allowed inside `unsafe` blocks",
+							&expr.pos
+						);
+					} elif (expr.index is ast::RangeExpr) {
+						self.error("cannot slice a pointer", &expr.pos);
+					}
+				}
+				if (t.eq(self.table.str_t) and expr.index is ast::RangeExpr) {
+					expr.typ = self.table.str_t;
+				} elif (t.eq(self.table.str_t) or t.eq(self.table.charptr_t)) {
+					expr.typ = self.table.u8_t;
+				} else {
+					expr.typ = t.deref();
+				}
+			}
+		}
+		return expr.typ;
+	}
+
+	fn check_null_coalescing(mut &self, mut expr: &ast::NullCoalescing) ast::Type {
+		let typ = self.check_expr(&expr.expr);
+		if (!(typ is ast::Optional or typ.is_pointer())) {
+			self.error("cannot coalesce a non-optional type", &expr.pos);
+			return typ;
+		}
+		let oet = self.expected_type;
+		self.expected_type = typ;
+		let typ2 = self.check_expr(&expr.default_expr);
+		try self.check_compatible_types(typ2, typ) catch self.error(err.msg, &expr.pos);
+		expr.typ = typ.non_optional();
+		if (expr.expr.is_null_value()) {
+			self.error(fmt!("cannot use null value `{}`", expr.expr), expr.expr.pos());
+		} elif (expr.default_expr.is_null_value()) {
+			self.error(
+				fmt!("cannot use null value `{}`", expr.default_expr), expr.default_expr.pos()
+			);
+		}
+		self.expected_type = oet;
+		return expr.typ;
+	}
+
+	fn check_null_check_expr(mut &self, mut expr: &ast::NullCheckExpr) ast::Type {
+		let typ = self.check_expr(&expr.expr);
+		if (typ !is ast::Optional) {
+			self.error("cannot check a non-optional type", &expr.pos);
+			return typ;
+		}
+		expr.typ = typ.non_optional();
+		if (expr.expr.is_null_value()) {
+			self.error(fmt!("cannot use null value `{}`", expr.expr), expr.expr.pos());
+		}
+		return expr.typ;
+	}
+
+	fn check_tuple_literal(mut &self, mut expr: &ast::TupleLiteral) ast::Type {
+		let mut typs = vec[ast::Type]::new();
+		let oet = self.expected_type;
+		for (i, mut &e in expr.exprs) {
+			if (self.expected_type.neq(ast::VOID_T)) {
+				let ts = self.expected_type.ts();
+				if (ts.kind == .Tuple and ts.fields.len == expr.exprs.len) {
+					self.expected_type = ts.fields[i].typ;
+				}
+			}
+			push!(typs, self.untyped_to_real_type(self.check_expr(e)));
+			self.expected_type = oet;
+		}
+		expr.typ = ast::Type::new(self.table.gmod.add_or_get_tuple(typs));
+		return expr.typ;
+	}
+
+	fn check_cast_expr(mut &self, mut expr: &ast::CastExpr) ast::Type {
+		let to_t = expr.typ;
+		let to_ts = to_t.ts();
+
+		let oet = self.expected_type;
+		let to_t_is_number = to_t.is_number();
+		if (to_t_is_number) {
+			self.expected_type = to_t;
+		}
+
+		let from_t = self.check_expr(&expr.expr);
+		let mut from_ts = from_t.ts();
+
+		// polymorphism - upcasting/downcasting
+		if (from_ts.kind in vec[TypeKind]{.BoxT, .Struct} and to_ts.kind == .Struct) {
+			let is_box = from_ts.kind == .BoxT;
+			if (is_box) {
+				from_ts = (from_ts.info as &ast::BoxInfo).elem_typ.ts();
+			}
+
+			let info_from = from_ts.info as &ast::StructInfo;
+			if (info_from.has_base) {
+				// upcasting
+				if (self.is_sub_struct_of(from_ts, to_ts)) {
+					if (from_t is ast::Pointer) {
+						self.error(fmt!("cannot cast type `{}` to `{}`", from_t, to_t), &expr.pos);
+						self.help("use a reference instead");
+					} elif (to_t !is ast::Reference) {
+						self.error(fmt!("cannot cast type `{}` to `{}`", from_t, to_t), &expr.pos);
+						self.help(fmt!("use `{}` instead of `{}`", to_t.ref(), to_t));
+					} else {
+						expr.typ = to_t;
+					}
+					expr.is_upcast = true;
+					return expr.typ;
+				}
+			}
+
+			let info_to = to_ts.info as &ast::StructInfo;
+			if (info_to.has_base) {
+				// downcasting
+				if (self.is_sub_struct_of(to_ts, from_ts)) {
+					if (to_t !is ast::Reference) {
+						self.error(fmt!("cannot cast type `{}` to `{}`", from_t, to_t), &expr.pos);
+						self.help("use a reference instead");
+					} elif (!is_box and from_t !is ast::Reference) {
+						self.error(fmt!("cannot cast type `{}` to `{}`", from_t, to_t), &expr.pos);
+						self.help("use a reference instead");
+					}
+					expr.is_downcast = true;
+					expr.typ = to_t;
+					return expr.typ;
+				}
+			}
+		}
+
+		if (from_t.eq(to_t)) {
+			self.error(
+				fmt!("cannot cast type `{}` to `{}`", from_ts.name, to_ts.name), &expr.pos
+			);
+		} elif (from_ts.kind == .SumType) {
+			let sti = from_ts.info as &ast::SumTypeInfo;
+			let t = if (to_t is ast::Reference) to_t.deref() else to_t;
+			if (!sti.contains(t)) {
+				self.error(
+					fmt!("cannot cast type `{}` to `{}`", from_ts.name, to_ts.name), &expr.pos
+				);
+			}
+		} elif (to_ts.kind == .SumType) {
+			let sti = to_ts.info as &ast::SumTypeInfo;
+			if (!sti.contains(from_t)) {
+				self.error(
+					fmt!("cannot cast type `{}` to `{}`", from_ts.name, to_ts.name), &expr.pos
+				);
+			}
+		} elif (
+			// ==== Pointer/Reference to Reference/Pointer ============
+			((from_t is ast::Reference and to_t is ast::Pointer)
+				or (from_t is ast::Pointer and to_t is ast::Reference)
+				and (from_t.parent().eq(to_t.parent()))
+			)
+			// ========================================================
+			or (from_t.is_c_pointer() and (to_t.is_pointer() or to_t is ast::Reference))
+			or ((from_t.is_pointer() or from_t is ast::Reference) and to_t.is_c_pointer())
+			// ========================================================
+			or (from_t.is_c_pointer() and to_t.is_int())
+			// ========================================================
+			or (from_t.eq(self.table.u8ptr_t) and to_t.is_charptr())
+			or (from_t.is_charptr() and to_t.eq(self.table.u8ptr_t))) {
+			if (!self.inside_unsafe) {
+				self.error(
+					fmt!(
+						"cast type `{}` to `{}` is unsafe and requires `unsafe` block",
+						from_t, to_t
+					), &expr.pos
+				);
+				self.note("pointers are unsafe and can contain null values");
+			}
+		} elif ((from_ts.kind == .Enum and to_t.is_int())
+			or (from_t.is_int() and to_ts.kind == .Enum)) {
+			let expr_c = expr.expr.clear();
+			if (to_ts.kind == .Enum and expr_c is ast::IntegerLiteral) {
+				let f = cast(expr_c, &ast::IntegerLiteral);
+				let mut in_range = false;
+				let mut enum_val: i64 = 0;
+				let node_val = try conv::str_to_int(f.lit, 0, 64) orelse 0;
+
+				// TODO: check in runtime
+				for (&enum_field in cast(to_ts.info, &ast::EnumInfo).fields) {
+					if (enum_field.expr is ast::IntegerLiteral) {
+						enum_val = try conv::str_to_int(
+							cast(enum_field.expr, &ast::IntegerLiteral).lit, 0, 64
+						) orelse 0;
+					}
+					if (node_val == enum_val) {
+						in_range = true;
+						break;
+					}
+					enum_val++;
+				}
+
+				if (!in_range) {
+					self.error(
+						fmt!(
+							"{} does not represent a valid value of enum `{}`",
+							f.lit, to_ts.name
+						), &f.pos
+					);
+				}
+			}
+		} elif (
+			!((from_t.is_float() and to_t.is_int()) or (from_t.is_int() and to_t.is_float())
+			or (from_t.is_int() and to_t.is_int()) or (from_t.is_float() and to_t.is_float())
+			// ========================================================
+			or (from_t.eq(self.table.u8_t) and to_t.eq(self.table.rune_t))
+			or (from_t.eq(self.table.rune_t) and to_t.eq(self.table.u8_t))
+		)) {
+			self.error(fmt!("cannot cast type `{}` to `{}`", from_t, to_t), &expr.pos);
+		}
+
+		if (to_t_is_number) {
+			self.expected_type = oet;
+		}
+
+		expr.typ = to_t;
+		return expr.typ;
+	}
+
+	fn check_ident(mut &self, mut expr: &ast::Ident) ast::Type {
+		if (expr.name == "_") {
+			self.error("variable `_` can only be used in assignments", &expr.pos);
+		} elif (expr.resolved) {
+			if (expr.is_obj) {
+				expr.typ = expr.obj.typ();
+				expr.obj.mark_as_used();
+				if (expr.obj is ast::Var) {
+					let pos = expr.obj.pos();
+					if (expr.pos.pos < pos.pos) {
+						self.error(
+							fmt!("variable `{}` is used before its declaration", expr.name),
+							&expr.pos
+						);
+					}
+					let mut obj = expr.obj as &ast::Var;
+					let kind = if (obj.is_arg) "argument" else "variable";
+					if (obj.is_dropped) {
+						self.error(fmt!("cannot use dropped {} `{}`", kind, obj.name), &expr.pos);
+						if (obj.is_mut and !obj.is_arg) {
+							self.help(fmt!("assign a new value to `{}`", obj.name));
+						}
+					} elif (obj.lifetime.is_valid()) {
+						let ts = obj.typ.ts();
+						if (obj.lifetime.is_moved) {
+							self.error("use of moved value", &expr.pos);
+							self.note_with_pos(
+								"value moved here", &obj.lifetime.moved_in_pos
+							);
+							self.note(
+								fmt!("move occurs because `{}` has type `{}`, which is not "
+								"marked with the `copy` attribute", obj.name, ts.qualname())
+							);
+						} elif (obj.typ is ast::Reference) {
+							if (!obj.lifetime.is_static and !obj.dangling_ptr_error
+								and expr.scope.?.start_pos < obj.lifetime.start
+								and expr.scope.?.end_pos > obj.lifetime.end) {
+								self.error("dangling reference in use", &expr.pos);
+								self.note_with_pos(
+									"referenced value does not live long enough",
+									&obj.lifetime.pos
+								);
+								obj.dangling_ptr_error = true;
+							}
+						}
+					}
+				}
+			}
+			return expr.typ;
+		}
+		return ast::VOID_T;
+	}
+
+	fn check_selector_expr(mut &self, mut expr: &ast::SelectorExpr) ast::Type {
+		expr.left_typ = self.check_expr(&expr.left);
+		let mut ts = expr.left_typ.ts();
+		if (ts.kind == .Void) {
+			return expr.left_typ;
+		} elif (expr.left_typ is ast::Optional) {
+			self.error("fields of an optional value cannot be accessed directly", &expr.pos);
+			self.help("handle it with `.?`: `value.?.field`");
+			self.help("or use the null-coalescing operator: `(value ?? default_expr).field`");
+		} elif (expr.left_typ is ast::Pointer) {
+			self.error("fields of a pointer value cannot be accessed directly", &expr.pos);
+			self.help("use the dereference operator instead: `ptr_value.*.field_name`");
+		}
+		switch (ts.kind) {
+			.Array => {
+				if (expr.field_name == "len") {
+					expr.typ = self.table.i32_t;
+					return expr.typ;
+				}
+			}
+			.Vector => {
+				if (expr.field_name == "len") {
+					expr.typ = self.table.i32_t;
+					return expr.typ;
+				} elif (expr.field_name == "cap") {
+					expr.typ = self.table.i32_t;
+					return expr.typ;
+				} elif (expr.field_name == "data") {
+					expr.typ = self.table.rawptr_t;
+					return expr.typ;
+				}
+			}
+			.Slice => {
+				if (expr.field_name == "len") {
+					expr.typ = self.table.i32_t;
+					return expr.typ;
+				} elif (expr.field_name == "data" and self.inside_unsafe) {
+					expr.typ = self.table.rawptr_t;
+					return expr.typ;
+				}
+			}
+			.Map => {
+				if (expr.field_name == "len") {
+					expr.typ = self.table.i32_t;
+					return expr.typ;
+				}
+			}
+			.Str => {
+				switch (expr.field_name) {
+					"cstr" => {
+						expr.typ = self.table.u8ptr_t;
+						return expr.typ;
+					}
+					"len" => {
+						expr.typ = self.table.i32_t;
+						return expr.typ;
+					}
+					else => {}
+				}
+			}
+			.BoxT => {
+				ts = (ts.info as &ast::BoxInfo).elem_typ.ts();
+			}
+			else => {}
+		}
+
+		let mut found = false;
+		let mut f = &ast::Field{};
+
+		if (let field = ts.find_field(expr.field_name)) {
+			f = field;
+			found = true;
+		} elif (ts.info is ast::StructInfo) {
+			let mut base_ts = (ts.info as &ast::StructInfo).base_ts();
+			while (base_ts != null) {
+				if (let field = base_ts.?.find_field(expr.field_name)) {
+					f = field;
+					ts = base_ts.?;
+					found = true;
+					expr.require_cast = true;
+					expr.cast_to_type = ast::Type::new(ts).ref();
+					break;
+				}
+				base_ts = (base_ts.?.info as &ast::StructInfo).base_ts();
+			}
+		}
+
+		if (found) {
+			expr.field_info = f;
+			expr.typ = f.typ;
+			if (!f.is_pub and self.mods != ts.module) {
+				let is_protected = f.attrs.contains("protected");
+				let self_ts = self.self_type.ts();
+				if (!(is_protected and self.inside_impl and self_ts.kind == .Struct
+					and self.is_sub_struct_of(self_ts, ts))) {
+					self.error(
+						fmt!("field `{}.{}` is {}", ts.name, f.name,
+						if (is_protected) "protected" else "private"), &expr.field_pos
+					);
+				}
+			} elif (ts.kind == .Union and !self.inside_unsafe) {
+				self.warn("reading a union field (or its address) requires `unsafe`",
+					&expr.field_pos);
+			}
+		} else {
+			self.error(
+				fmt!("type `{}` has no field `{}`", ts.name, expr.field_name),
+				&expr.field_pos
+			);
+			self.suggestion(expr.field_name, ts.collect_field_names());
+			expr.typ = ast::VOID_T;
+		}
+		return expr.typ;
+	}
+
+	fn check_path_expr(&self, mut expr: &ast::PathExpr) ast::Type {
+		expr.typ = expr.field_info.typ();
+		return expr.typ;
+	}
+
+	fn check_struct_literal(mut &self, mut expr: &ast::StructLiteral) ast::Type {
+		if (!(expr.name is ast::Ident or expr.name is ast::PathExpr)) {
+			self.error("expected identifier or path", expr.name.pos());
+			return ast::VOID_T;
+		}
+
+		let ts = if (expr.name is ast::Ident) (expr.name as &ast::Ident).sym as &ast::TypeSymbol
+			else (expr.name as &ast::PathExpr).field_info as &ast::TypeSymbol;
+
+		let name_pos = expr.name.pos();
+		if (ts.kind !in vec[TypeKind]{.Struct, .Union, .Str, .SumType}) {
+			self.error(fmt!("expected struct, union or sumtype value, found {}", ts.kind),
+				&expr.pos);
+			expr.typ = ast::VOID_T;
+			return expr.typ;
+		} elif (ts.info is ast::StructInfo) {
+			let si = ts.info as &ast::StructInfo;
+			if (si.is_opaque) {
+				self.error(
+					fmt!("cannot create instance of opaque struct `{}`", ts.name), name_pos
+				);
+			} elif (si.noinit and self.mods != ts.module) {
+				self.error(
+					fmt!("cannot create instance of `noinit` struct `{}`", ts.name), name_pos
+				);
+			} elif (si.attrs.contains("abstract") and !self.inside_struct_base_expr) {
+				self.error(
+					fmt!("cannot create instance of abstract struct `{}`", ts.name), name_pos
+				);
+			}
+		} elif (ts.info is ast::SumTypeInfo) {
+			let sti = ts.info as &ast::SumTypeInfo;
+			if (!sti.has_default_expr) {
+				self.error(fmt!("cannot create instance of sum type `{}`", ts.name), name_pos);
+			}
+		}
+
+		let mut used_fields = map<str, bool>::new();
+		expr.typ = ast::Type::new(ts);
+		if (ts.kind in vec[TypeKind]{.Struct, .Union, .Str}) {
+			if (expr.has_base_init and ts.kind == .Struct) {
+				let sinfo = ts.info as &ast::StructInfo;
+				let base_init_pos = expr.base_init.pos();
+				if (let base_ts = sinfo.base_ts()) {
+					let old_isbe = self.inside_struct_base_expr;
+					self.inside_struct_base_expr = true;
+					let base_ty = self.check_expr(&expr.base_init);
+					try self.check_compatible_types(base_ty, ast::Type::new(base_ts)) catch {
+						self.error(err.msg, base_init_pos);
+					};
+					self.inside_struct_base_expr = old_isbe;
+				} else {
+					self.error(fmt!("struct `{}` has no base", ts.qualname()), base_init_pos);
+				}
+			}
+			if (expr.has_update_expr) {
+				try self.check_compatible_types(
+					self.check_expr(&expr.update_expr), expr.typ
+				) catch {
+					self.error(err.msg, expr.update_expr.pos());
+				};
+			}
+			for (mut &f in expr.fields) {
+				if (let i = ts.find_field(f.name)) {
+					if (i.attrs.contains("noinit") and self.mods != ts.module) {
+						self.error(
+							fmt!("field `{}.{}` cannot be initialized", ts.name, i.name),
+							&expr.pos
+						);
+					}
+					used_fields[f.name] = true;
+					f.expected_type = i.typ;
+					let oet = self.expected_type;
+					self.expected_type = i.typ;
+					try self.check_compatible_types(self.check_expr(&f.expr), i.typ) catch {
+						self.error(err.msg, f.expr.pos());
+						self.note(fmt!("in field `{}` of struct `{}`", f.name, ts.name));
+					};
+					self.mark_value_as_moved(&f.expr);
+					self.expected_type = oet;
+				} else {
+					self.error(fmt!("struct `{}` has no field `{}`", ts.name, f.name), &f.pos);
+				}
+			}
+			if (!expr.has_update_expr) {
+				for (&f in ts.fields) {
+					if (used_fields[f.name]) {
+						continue;
+					}
+					if (!f.has_default_expr) {
+						let fts = f.typ.ts();
+						if (f.typ is ast::Reference or fts.kind == .BoxT or (
+								fts.kind == .SumType
+								and !(fts.info as &ast::SumTypeInfo).has_default_expr
+							) or f.attrs.contains("required")) {
+							self.error(
+								fmt!("field `{}.{}` must be initialized", ts.name, f.name),
+								&expr.pos
+							);
+						}
+					}
+				}
+			}
+		} else {
+			if (expr.fields.len > 0) {
+				self.error(fmt!("{} `{}` has no fields", ts.kind, ts.name), &expr.pos);
+			} elif (expr.has_update_expr) {
+				self.error(
+					fmt!("cannot use update syntax with {} `{}`", ts.kind, ts.name), &expr.pos
+				);
+			}
+		}
+		return expr.typ;
+	}
+
+	fn check_ternary_expr(mut &self, mut expr: &ast::TernaryExpr) ast::Type {
+		if (expr.is_comptime) {
+			if (expr.comptime_result) {
+				expr.typ = self.check_expr(&expr.left);
+			} else {
+				expr.typ = self.check_expr(&expr.right);
+			}
+			return expr.typ;
+		}
+		let cond = self.check_expr(&expr.cond);
+		if (cond.neq(self.table.bool_t)) {
+			self.error("non-boolean expression used as condition", &expr.pos);
+		}
+		let ltyp = self.check_expr(&expr.left);
+		expr.typ = ltyp;
+		let rtyp = self.check_expr(&expr.right);
+		try self.check_compatible_types(rtyp, ltyp) catch {
+			if (ltyp.eq(self.table.untyped_int_t) or ltyp.eq(self.table.untyped_float_t)) {
+				if (ltyp.eq(self.table.untyped_int_t)) {
+					if (rtyp.is_int() or rtyp.is_float()) {
+						expr.typ = rtyp;
+					} else {
+						self.error(err.msg, expr.right.pos());
+					}
+				} else { // untyped float
+					if (rtyp.is_float()) {
+						expr.typ = rtyp;
+					} else {
+						self.error(err.msg, expr.right.pos());
+					}
+				}
+			} elif (rtyp.eq(self.table.untyped_int_t) or rtyp.eq(self.table.untyped_float_t)) {
+				if (rtyp.eq(self.table.untyped_int_t)) {
+					if (!(ltyp.is_int() or ltyp.is_float())) {
+						self.error(err.msg, expr.right.pos());
+					}
+				} else { // untyped float
+					if (!rtyp.is_float()) {
+						self.error(err.msg, expr.right.pos());
+					}
+				}
+			} else {
+				self.error(err.msg, expr.right.pos());
+			}
+		};
+		return expr.typ;
+	}
+
+	fn check_range_expr(mut &self, mut expr: &ast::RangeExpr) ast::Type {
+		let mut start_t = ast::VOID_T;
+		let mut end_t = ast::VOID_T;
+		if (expr.has_start) {
+			start_t = self.untyped_to_real_type(self.check_expr(&expr.start));
+		}
+		if (expr.has_end) {
+			end_t = self.untyped_to_real_type(self.check_expr(&expr.end));
+		}
+		if (expr.has_start and !start_t.is_int()) {
+			self.error("expected numeric values in range", expr.start.pos());
+		} elif (expr.has_end and !end_t.is_int()) {
+			self.error("expected numeric values in range", expr.end.pos());
+		} elif (expr.has_start and expr.has_end) {
+			try self.check_compatible_types(end_t, start_t) catch {
+				self.error(err.msg, expr.end.pos());
+			};
+		}
+		if (!expr.has_start and !expr.has_end) {
+			expr.typ = self.table.i32_t;
+		} else {
+			expr.typ = if (expr.has_start) start_t else end_t;
+		}
+		return expr.typ;
+	}
+
+	fn check_try_expr(mut &self, mut expr: &ast::TryExpr) ast::Type {
+		let oit = self.inside_try;
+		self.inside_try = true;
+		let t = self.check_expr(&expr.expr);
+		self.inside_try = oit;
+		if (expr.expr !is ast::CallExpr) {
+			self.error("expected call expression", expr.expr.pos());
+		} elif (t !is ast::Result) {
+			let i = expr.expr as &ast::CallExpr;
+			self.error(
+				fmt!("{} `{}` does not returns a result type", i.info.kind(), i.info.qualname()),
+				expr.expr.pos()
+			);
+		} elif (self.func.ret_typ !is ast::Result and !(self.func.is_main or expr.has_orelse
+			or expr.has_catch)) {
+			self.error("cannot propagate a error with `try` here", &expr.pos);
+			self.note(
+				fmt!("`{}` should return a result to propagate the error", self.func.name)
+			);
+			self.note("or can also use `orelse` or `catch` to handle it");
+		}
+		expr.typ = t.non_result();
+		if (expr.has_orelse) {
+			if (t.eq(ast::VOID_T)) {
+				self.error("cannot use `orelse` with void expression", &expr.pos);
+			} else {
+				let old_et = self.expected_type;
+				self.expected_type = expr.typ;
+				let t2 = self.check_expr(&expr.orelse_val);
+				try self.check_compatible_types(t2, expr.typ) catch {
+					self.error(err.msg, expr.orelse_val.pos());
+				};
+				self.expected_type = old_et;
+			}
+		} elif (expr.has_catch) {
+			expr.scope.update_var_type(
+				"err", ast::Type::new(self.table.error_type as &ast::TypeSymbol)
+			);
+			self.check_stmt(&expr.catcher);
+			if (expr.typ.neq(ast::VOID_T) and !self.has_return(expr.catcher, true)) {
+				self.error("invalid `catch` statement with non-void expression", expr.catcher.pos());
+				self.note("the `catch` statement should have a `@[noreturn]` "
+				"function/method call, or `return`, `break` or `continue`");
+				self.help("use `orelse` if you want to use an alternative value");
+			}
+		} elif (self.inside_defer) {
+			self.error("error propagation is not allowed inside `defer` blocks", &expr.pos);
+		}
+		return expr.typ;
+	}
+
+	fn check_array_literal(mut &self, mut expr: &ast::ArrayLiteral) ast::Type {
+		if (expr.is_fixed) {
+			_ = self.check_expr(&expr.size);
+		} elif (!self.table.has_vec_type) {
+			self.error("cannot use array literals", &expr.pos);
+			self.note("there is no struct marked as the special type `vec`");
+		}
+		let et = self.expected_type;
+		self.expected_type = expr.elem_typ;
+		if (expr.has_len or expr.has_cap or expr.has_init) {
+			if (expr.has_len) {
+				let len_t = self.check_expr(&expr.len_expr);
+				if (!len_t.is_int()) {
+					self.error(
+						"argument `len` should be an numeric expression",
+						expr.len_expr.pos()
+					);
+				}
+			}
+			if (expr.has_cap) {
+				let cap_t = self.check_expr(&expr.cap_expr);
+				if (!cap_t.is_int()) {
+					self.error(
+						"argument `cap` should be an numeric expression",
+						expr.cap_expr.pos()
+					);
+				}
+			}
+			if (expr.has_init) {
+				let init_t = self.check_expr(&expr.init_expr);
+				try self.check_compatible_types(
+					init_t, expr.elem_typ
+				) catch {
+					self.error(err.msg, expr.init_expr.pos());
+					self.note("in argument `init`");
+				};
+			}
+		} else {
+			for (i, mut &elem in expr.elems) {
+				try self.check_compatible_types(self.check_expr(elem), expr.elem_typ) catch {
+					self.error(err.msg, elem.pos());
+					self.note(fmt!("in element {} of array literal", i + 1));
+				};
+			}
+		}
+		if (expr.is_fixed) {
+			expr.typ = ast::Type::new(self.table.gmod.add_or_get_array(
+				expr.size, expr.elem_typ
+			));
+		} else {
+			expr.typ = ast::Type::new(self.table.gmod.add_or_get_vector(expr.elem_typ));
+		}
+		self.expected_type = et;
+		return expr.typ;
+	}
+
+	fn check_map_literal(mut &self, mut expr: &ast::MapLiteral) ast::Type {
+		if (!self.table.has_map_type) {
+			self.error("cannot use map literals", &expr.pos);
+			self.note("there is no struct marked as the special type `map`");
+		}
+		let et = self.expected_type;
+		self.expected_type = expr.elem_typ;
+		for (i, mut &f in expr.fields) {
+			self.check_dup_map_key(expr, &f.key, i);
+			let kt = self.check_expr(&f.key);
+			if (kt.eq(self.table.str_t)) {
+				try self.check_compatible_types(self.check_expr(&f.value), expr.elem_typ) catch {
+					self.error(err.msg, f.value.pos());
+				};
+			} else {
+				self.error("expected a `str` key", f.key.pos());
+			}
+		}
+		self.expected_type = et;
+		expr.typ = ast::Type::new(self.table.gmod.add_or_get_map(expr.elem_typ));
+		return expr.typ;
+	}
+
+	fn check_dot_enum_expr(mut &self, mut expr: &ast::DotEnumExpr) ast::Type {
+		expr.typ = ast::VOID_T;
+		let ts = self.expected_type.ts();
+		if (ts.kind == .Enum) {
+			let info = ts.info as &ast::EnumInfo;
+			if (info.contains(expr.field)) {
+				expr.typ = self.expected_type;
+			} else {
+				self.error(fmt!("enum `{}` has no field `{}`", ts.name, expr.field), &expr.pos);
+			}
+		} else {
+			self.error(fmt!("`{}` is not a enum", self.expected_type), &expr.pos);
+		}
+		return expr.typ;
+	}
+}

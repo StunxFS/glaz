@@ -1,0 +1,155 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::tokens;
+
+pub type Decl = EmptyDecl | Use | CHash | ExternBlock | ModDecl | ConstDecl
+	| TypeDecl | StructDecl | EnumDecl | ImplDecl | FnDecl | TestDecl = EmptyDecl{};
+
+pub struct EmptyDecl {}
+
+pub struct Use {
+	pub mut path: Expr,
+	pub alias: str,
+	pub syms: vec[UseData], // `{ self, func }` in `use x::{ self, func };`
+	pub glob: bool,
+	pub pos: tokens::Position
+}
+
+pub struct UseData {
+	pub mut path: Expr,
+	pub alias: str,
+	pub pos: tokens::Position
+}
+
+pub struct CHash {
+	pub line: str,
+	pub mut flag: CFlag,
+	pub pos: tokens::Position
+}
+
+pub struct ExternBlock {
+	pub mut decls: vec[Decl]
+}
+
+pub struct ModDecl {
+	pub name: str,
+	pub scope: &Scope,
+	pub is_pub: bool,
+	pub mut decls: vec[Decl],
+	pub module: str,
+	pub sym: Symbol,
+	pub name_pos: tokens::Position
+}
+
+pub struct ConstDecl {
+	pub name: str,
+	pub mut expr: Expr,
+	pub has_expr: bool,
+	pub is_pub: bool,
+	pub typ: Type,
+	pub pos: tokens::Position,
+	pub module: str,
+	pub name_pos: tokens::Position
+}
+
+pub struct TypeDecl {
+	pub name: str,
+	pub is_sumtype: bool,
+	pub is_pub: bool,
+	pub parent: Type,
+	pub types: vec[Type],
+	pub mut default_expr: Expr,
+	pub has_default_expr: bool,
+	pub name_pos: tokens::Position
+}
+
+pub struct StructField {
+	pub attrs: Attrs,
+	pub name: str,
+	pub name_pos: tokens::Position,
+	pub has_default_expr: bool,
+	pub mut default_expr: Expr,
+	pub mut default_expr_typ: Type,
+	pub is_mut: bool,
+	pub is_pub: bool,
+	pub pos: tokens::Position,
+	pub typ: Type
+}
+
+pub struct StructDecl {
+	pub attrs: Attrs,
+	pub name: str,
+	pub module: str,
+	pub mut fields: vec[StructField],
+	pub is_union: bool,
+	pub is_pub: bool,
+	pub has_base: bool,
+	pub mut base_expr: Expr,
+	pub name_pos: tokens::Position
+}
+
+impl StructDecl {
+	pub fn base_ts(&self) ?&TypeSymbol {
+		if (self.has_base) {
+			if (self.base_expr is Ident) {
+				return (self.base_expr as &Ident).sym as &TypeSymbol;
+			} elif (self.base_expr is PathExpr) {
+				return (self.base_expr as &PathExpr).field_info as &TypeSymbol;
+			}
+		}
+		return null;
+	}
+}
+
+pub struct EnumField {
+	pub name: str,
+	pub mut expr: Expr,
+	pub has_expr: bool,
+	pub name_pos: tokens::Position
+}
+
+pub struct EnumDecl {
+	pub attrs: Attrs,
+	pub name: str,
+	pub gname: str,
+	pub mut fields: vec[EnumField],
+	pub is_pub: bool,
+	pub name_pos: tokens::Position
+}
+
+pub struct ImplDecl {
+	pub typ: Type,
+	pub mut decls: vec[Decl]
+}
+
+pub struct FnDecl {
+	pub attrs: Attrs,
+	pub name: str,
+	pub name_pos: tokens::Position,
+	pub rec_is_mut: bool,
+	pub rec_typ: Type,
+	pub mut args: vec[Param],
+	pub ret_typ: Type,
+	pub scope: &Scope = &Scope{},
+	pub info: Function, // for 'impl' blocks
+	pub mut stmts: vec[Stmt],
+	pub mut defer_stmts: vec[&DeferStmt],
+	pub is_pub: bool,
+	pub is_extern: bool,
+	pub is_unsafe: bool,
+	pub is_method: bool,
+	pub is_associated: bool,
+	pub is_deprecated: bool,
+	pub is_inline: bool,
+	pub is_variadic: bool,
+	pub is_main: bool,
+	pub use_base: bool
+}
+
+pub struct TestDecl {
+	pub name: str,
+	pub scope: &Scope = &Scope{},
+	pub mut defer_stmts: vec[&DeferStmt],
+	pub mut stmts: vec[Stmt]
+}

@@ -1,0 +1,225 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+// adapted from: `https://github.com/rxi/map`, credits to rxi!
+
+fn map_hash_from_str(s: str) u32 {
+	let mut hash: u32 = 5381;
+	for (c in s) {
+		hash = ((hash << 5) + hash) ^ c;
+	}
+	return hash;
+}
+
+struct MapIter {
+	mut bucketidx: u32,
+	mut node: *MapNode
+}
+
+impl MapIter {
+	@[inline]
+	fn new() MapIter { return MapIter{}; }
+}
+
+struct MapNode {
+	mut hash: u32,
+	mut key: str,
+	mut value: rawptr,
+	mut next: *MapNode
+}
+
+impl MapNode {
+	fn new(key: str, value: rawptr, vsize: i32) *MapNode {
+		unsafe {
+			let mut node = cast(mem::alloc(cast(sizeof!(MapNode), i32)), *MapNode);
+			node.*.hash = map_hash_from_str(key);
+			node.*.key = key.clone();
+			node.*.value = mem::alloc(vsize);
+			_ = mem::copy(node.*.value, value, vsize);
+			return node;
+		}
+	}
+}
+
+@[special_type(name="map")]
+struct Map {
+	mut buckets: **MapNode,
+	mut nbuckets: u32, // buckets count
+	pub mut len: u32,
+	vsize: i32
+}
+
+impl Map {
+	@[inline]
+	fn new(vsize: i32) Map { return Map{vsize: vsize}; }
+
+	fn from_literal(keys: *str, values: rawptr, vsize: i32, buckets: i32) Map {
+		let mut pvals = unsafe { cast(values, *u8) };
+		let mut m = Map::new(vsize);
+		m.resize(cast(buckets, u32));
+		for (i in 0..buckets) unsafe {
+			m.set(keys[i], pvals);
+			pvals = pvals + vsize;
+		}
+		return m;
+	}
+
+	fn add_node(mut &self, mut node: *MapNode) {
+		let n = self.bucket_index(unsafe { node.*.hash });
+		unsafe {
+			node.*.next = self.buckets[n];
+			self.buckets[n] = node;
+		}
+	}
+
+	fn get_or(&self, key: str, or_value: rawptr) rawptr {
+		let res = self.get(key);
+		if (res == null) {
+			return or_value;
+		}
+		return res;
+	}
+
+	fn get(&self, key: str) rawptr {
+		let next = self.get_ref(key);
+		return unsafe { if (next != null) next.*.*.value else null };
+	}
+
+	fn get_ref(&self, key: str) **MapNode {
+		unsafe {
+			let hash = map_hash_from_str(key);
+			let mut next: **MapNode = null;
+			if (self.nbuckets > 0) {
+				next = &self.buckets[self.bucket_index(hash)];
+				while (next.* != null) {
+					if (next.*.*.hash == hash and next.*.*.key == key) {
+						return next;
+					}
+					next = &next.*.*.next;
+				}
+			}
+		}
+		return null;
+	}
+
+	fn set(mut &self, key: str, value: rawptr) {
+		unsafe {
+			let mut n: u32 = 0;
+			let mut node: *MapNode = null;
+
+			// find node
+			let mut next = self.get_ref(key);
+			if (next != null) {
+				// replace if existing node
+				_ = mem::copy(next.*.*.value, value, self.vsize);
+			} else {
+				// add new node
+				node = MapNode::new(key, value, self.vsize);
+				if (self.len >= self.nbuckets) {
+					n = if (self.nbuckets > 0) self.nbuckets << 1 else 1;
+					self.resize(n);
+				}
+				self.add_node(node);
+				self.len++;
+			}
+		}
+	}
+
+	@[inline]
+	fn exists(&self, key: str) bool { return self.get_ref(key) != null; }
+
+	pub fn remove(mut &self, key: str) {
+		unsafe {
+			let mut node: *MapNode = null;
+			let mut next = self.get_ref(key);
+			if (next != null) {
+				node = next.*;
+				next.* = next.*.*.next;
+				mem::free(node);
+				self.len--;
+			}
+		}
+	}
+
+	@[inline]
+	fn bucket_index(&self, hash: u32) i32 {
+		return cast(unsafe { hash & (self.nbuckets - 1) }, i32);
+	}
+
+	fn resize(mut &self, nbuckets: u32) {
+		unsafe {
+			let mut nodes: *MapNode = null;
+			let mut node: *MapNode = null;
+			let mut next: *MapNode = null;
+			let mut buckets: **MapNode = null;
+			let mut i = cast(self.nbuckets, i32);
+
+			// chain all nodes together
+			while (i-- > 0) {
+				node = self.buckets[i];
+				while (node != null) {
+					next = node.*.next;
+					node.*.next = nodes;
+					nodes = node;
+					node = next;
+				}
+			}
+
+			// reset buckets
+			buckets = cast(
+				mem::realloc(self.buckets, cast(sizeof!(*MapNode) * nbuckets, i32)),
+				**MapNode
+			);
+			self.buckets = buckets;
+			self.nbuckets = nbuckets;
+			_ = mem::set(self.buckets, 0, cast(sizeof!(*MapNode) * self.nbuckets, i32));
+
+			// re-add nodes to buckets
+			node = nodes;
+			while (node != null) {
+				next = node.*.next;
+				self.add_node(node);
+				node = next;
+			}
+		}
+	}
+
+	fn next(&self, mut iter: *MapIter) str {
+		unsafe {
+			if (iter.*.node != null) {
+				iter.*.node = iter.*.node.*.next;
+				if (iter.*.node == null) {
+					goto next_bucket;
+				}
+			} else {
+	next_bucket:
+				do {
+					if (iter.*.bucketidx >= self.nbuckets) {
+						return str{}; // end
+					}
+					iter.*.node = self.buckets[iter.*.bucketidx++];
+				} while (iter.*.node == null);
+			}
+			return iter.*.node.*.key;
+		}
+	}
+
+	// TODO: add field `drop_fn` for drop element value
+	fn drop(mut &self) {
+		unsafe {
+			let mut i = self.nbuckets;
+			let mut next: *MapNode, mut node: *MapNode = null, null;
+			while (i-- > 0) {
+				node = self.buckets[i];
+				while (node != null) {
+					next = node.*.next;
+					// TODO: String.drop();
+					// node.*.key.drop();
+					mem::free(node);
+					node = next;
+				}
+			}
+			mem::free(self.buckets);
+		}
+	}
+}

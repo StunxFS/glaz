@@ -1,0 +1,696 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+use src::tokens;
+
+/// Type layout information.
+pub type Type = SimpleType | Reference | Pointer | Optional | Result | ArrayType
+	| MapType | TupleType | BoxType | Variadic = VOID_T;
+
+/// A simple type.
+pub struct SimpleType {
+	pub expr: Expr, // PathExpr or Ident
+	pub mut typ_s: &TypeSymbol = &TypeSymbol{},
+	pub mut unresolved: bool
+}
+
+/// A reference type (`&T`).
+pub struct Reference {
+	pub parent: Type
+}
+
+/// A raw pointer (`*T`).
+pub struct Pointer {
+	pub parent: Type
+}
+
+/// A optional value (T?).
+pub struct Optional {
+	pub parent: Type
+}
+
+/// A result value (!T).
+pub struct Result {
+	pub parent: Type
+}
+
+/// A array, vector or slice value ([T; SIZE]/vec[T]/[T]).
+pub struct ArrayType {
+	pub elem_typ: Type,
+	pub is_slice: bool,
+	pub is_fixed: bool,
+	pub mut size: Expr,
+	pub mut typ_s: &TypeSymbol = &TypeSymbol{},
+	pub mut unresolved: bool,
+	pub pos: tokens::Position
+}
+
+/// A map value (map<str, T>).
+pub struct MapType {
+	pub val_typ: Type,
+	pub mut typ_s: &TypeSymbol = &TypeSymbol{},
+	pub mut unresolved: bool,
+	pub pos: tokens::Position
+}
+
+/// A tuple value (T, T2, T3, ...).
+pub struct TupleType {
+	pub typs: vec[Type],
+	pub mut typ_s: &TypeSymbol = &TypeSymbol{},
+	pub mut unresolved: bool,
+	pub pos: tokens::Position
+}
+
+/// A boxed value (Box<T>).
+pub struct BoxType {
+	pub elem_typ: Type,
+	pub mut typ_s: &TypeSymbol = &TypeSymbol{},
+	pub mut unresolved: bool,
+	pub pos: tokens::Position
+}
+
+/// A variadic type (...T).
+pub struct Variadic {
+	pub elem_typ: Type,
+	pub mut typ_s: &TypeSymbol = &TypeSymbol{},
+	pub mut unresolved: bool
+}
+
+impl Type {
+	@[inline]
+	pub fn new(ts: &TypeSymbol) Type {
+		return SimpleType{
+			typ_s: ts
+		};
+	}
+
+	@[inline]
+	pub fn unresolved(expr: Expr) Type {
+		return SimpleType{
+			expr: expr,
+			unresolved: true
+		};
+	}
+
+	@[inline]
+	pub fn hash(self) i32 {
+		return self.to_gstr().hash();
+	}
+
+	@[inline]
+	pub fn basic_hash(self) i32 {
+		return self.simple_type().typ_s.gname.hash();
+	}
+
+	@[inline]
+	pub fn ref(self) Type {
+		return Reference{
+			parent: self
+		};
+	}
+
+	@[inline]
+	pub fn ptr(self) Type {
+		return Pointer{
+			parent: self
+		};
+	}
+
+	pub fn deref(self) Type {
+		switch (self) is {
+			Reference => return (self as &Reference).parent;
+			Pointer => return (self as &Pointer).parent;
+			BoxType => return (self as &BoxType).elem_typ;
+			else => return self;
+		}
+	}
+
+	@[inline]
+	pub fn optional(self) Type {
+		return Optional{
+			parent: self
+		};
+	}
+
+	pub fn non_optional(self) Type {
+		if (self !is Optional) {
+			return self;
+		}
+		return (self as &Optional).parent;
+	}
+
+	@[inline]
+	pub fn result(self) Type {
+		return Result{
+			parent: self
+		};
+	}
+
+	pub fn non_result(self) Type {
+		if (self !is Result) {
+			return self;
+		}
+		return (self as &Result).parent;
+	}
+
+	@[inline]
+	pub fn variadic(self) Type {
+		return Variadic{
+			elem_typ: self
+		};
+	}
+
+	pub fn simple_type(self) &SimpleType {
+		let mut bt = self;
+		while (bt !is SimpleType) {
+			bt = bt.parent();
+		}
+		return bt as &SimpleType;
+	}
+
+	pub fn ts(self) &TypeSymbol {
+		switch (self) is {
+			ArrayType => return (self as &ArrayType).typ_s;
+			MapType => return (self as &MapType).typ_s;
+			TupleType => return (self as &TupleType).typ_s;
+			BoxType => return (self as &BoxType).typ_s;
+			Variadic => return (self as &Variadic).typ_s;
+			Reference => return (self as &Reference).parent.ts();
+			else => {
+				let y = self.simple_type();
+				if (y.unresolved) {
+					return &VOID_TS;
+				}
+				let ts = y.typ_s;
+				if (ts.kind == .Alias) {
+					return (ts.info as &AliasInfo).parent.ts();
+				}
+				return ts;
+			}
+		}
+	}
+
+	pub fn parent(self) Type {
+		switch (self) is {
+			SimpleType => return self;
+			Reference => return (self as &Reference).parent;
+			Pointer => return (self as &Pointer).parent;
+			Optional => return (self as &Optional).parent;
+			Result => return (self as &Result).parent;
+			ArrayType => return (self as &ArrayType).elem_typ;
+			MapType => return (self as &MapType).val_typ;
+			TupleType => return self;
+			BoxType => return (self as &BoxType).elem_typ;
+			Variadic => return (self as &Variadic).elem_typ;
+		}
+		return VOID_T;
+	}
+
+	pub fn pos(self) &tokens::Position {
+		switch (self) is {
+			ArrayType => return &(self as &ArrayType).pos;
+			MapType => return &(self as &MapType).pos;
+			TupleType => return &(self as &TupleType).pos;
+			BoxType => return &(self as &BoxType).pos;
+			else => {}
+		}
+		return self.simple_type().expr.pos();
+	}
+
+	pub fn is_unresolved(self) bool {
+		switch (self) is {
+			ArrayType => return (self as &ArrayType).unresolved;
+			MapType => return (self as &MapType).unresolved;
+			TupleType => return (self as &TupleType).unresolved;
+			BoxType => return (self as &BoxType).unresolved;
+			Variadic => return (self as &Variadic).unresolved;
+			else => {}
+		}
+		return self.simple_type().unresolved;
+	}
+
+	@[inline]
+	pub fn is_pointer(self) bool {
+		return self is Pointer or self.is_c_pointer();
+	}
+
+	@[inline]
+	pub fn is_c_pointer(self) bool {
+		return self.ts().kind in vec[TypeKind]{.Rawptr, .Charptr};
+	}
+
+	@[inline]
+	pub fn is_rawptr(self) bool {
+		return self.ts().kind == .Rawptr;
+	}
+
+	@[inline]
+	pub fn is_charptr(self) bool {
+		return self.ts().kind == .Charptr;
+	}
+
+	@[inline]
+	pub fn is_enum(self) bool {
+		return self.ts().kind == .Enum;
+	}
+
+	@[inline]
+	pub fn is_bool(self) bool {
+		return self.ts().kind == .Bool;
+	}
+
+	pub fn is_extern(self) bool {
+		let ts = self.ts();
+		if (ts.info is StructInfo) {
+			return (ts.info as &StructInfo).is_extern;
+		}
+		return false;
+	}
+
+	@[inline]
+	pub fn is_signed(self) bool {
+		return self.ts().kind in vec[TypeKind]{
+			.I8, .I16,
+			.I32, .I64,
+			.Isize, .UntypedInt
+		};
+	}
+
+	@[inline]
+	pub fn is_unsigned(self) bool {
+		return self.ts().kind in vec[TypeKind]{
+			.U8, .U16,
+			.U32, .U64,
+			.Usize, .Rune
+		};
+	}
+
+	@[inline]
+	pub fn is_int(self) bool {
+		return self.is_signed() or self.is_unsigned();
+	}
+
+	@[inline]
+	pub fn is_float(self) bool {
+		return self.ts().kind in vec[TypeKind]{
+			.F32, .F64, .UntypedFloat
+		};
+	}
+
+	@[inline]
+	pub fn is_number(self) bool {
+		return self.is_int() or self.is_float();
+	}
+
+	@[inline]
+	pub fn is_primitive(self) bool {
+		return self.is_number() or self.is_c_pointer() or self.is_bool() or self.is_extern();
+	}
+
+	pub fn eq(self, other: Type) bool {
+		if (self is Optional and other !is Optional) {
+			return self.parent().eq(other);
+		}
+		switch (self) is {
+			SimpleType => {
+				if (other is SimpleType) {
+					let t = self as &SimpleType;
+					let t2 = other as &SimpleType;
+					return (t.typ_s == t2.typ_s);
+				}
+			}
+			Reference => {
+				if (other is Reference) {
+					let t = self as &Reference;
+					let t2 = other as &Reference;
+					return t.parent.eq(t2.parent);
+				}
+			}
+			Pointer => {
+				if (other is Pointer) {
+					let t = self as &Pointer;
+					let t2 = other as &Pointer;
+					return t.parent.eq(t2.parent);
+				}
+			}
+			ArrayType => {
+				if (other is ArrayType) {
+					let t = self as &ArrayType;
+					let t2 = other as &ArrayType;
+					if (t.is_slice and t2.is_slice) {
+						return t.elem_typ.eq(t2.elem_typ);
+					}
+					return (t.is_fixed == t2.is_fixed) and t.elem_typ.eq(t2.elem_typ);
+				}
+			}
+			MapType => {
+				if (other is MapType) {
+					let t = self as &MapType;
+					let t2 = other as &MapType;
+					return t.val_typ.eq(t2.val_typ);
+				}
+			}
+			TupleType => {
+				if (other is TupleType) {
+					let t = self as &TupleType;
+					let t2 = other as &TupleType;
+					if (t.typs.len != t2.typs.len) {
+						return false;
+					}
+					for (i, tt in t.typs) {
+						let tt2 = t2.typs[i];
+						if (!tt.eq(tt2)) {
+							return false;
+						}
+					}
+					return true;
+				}
+			}
+			BoxType => {
+				if (other is BoxType) {
+					let t = self as &BoxType;
+					let t2 = other as &BoxType;
+					return t.elem_typ.eq(t2.elem_typ);
+				}
+			}
+			Variadic => {
+				if (other is Variadic) {
+					let t = self as &Variadic;
+					let t2 = other as &Variadic;
+					return t.elem_typ.eq(t2.elem_typ);
+				}
+			}
+			Result => {
+				if (other is Result) {
+					let t = self as &Result;
+					let t2 = other as &Result;
+					return t.parent.eq(t2.parent);
+				}
+			}
+			else => {}
+		}
+		return false;
+	}
+
+	@[inline]
+	pub fn neq(self, other: Type) bool {
+		return !self.eq(other);
+	}
+
+	pub fn to_str(self) str {
+		let mut sb = strings::Builder::new();
+		switch (self) is {
+			SimpleType => {
+				let b = self as &SimpleType;
+				if (b.unresolved) {
+					sb.write_str(b.expr.to_str());
+				} else {
+					let ts = self.ts();
+					if (ts.module.len > 0 and ts.name != "str") {
+						sb.write_str(ts.module + "::");
+					}
+					sb.write_str(ts.name);
+				}
+			}
+			Reference => {
+				let r = self as &Reference;
+				sb.write_byte('&');
+				sb.write_str(r.parent.to_str());
+			}
+			Pointer => {
+				let p = self as &Pointer;
+				sb.write_byte('*');
+				sb.write_str(p.parent.to_str());
+			}
+			Optional => {
+				let opt = self as &Optional;
+				sb.write_str(opt.parent.to_str());
+				sb.write_byte('?');
+			}
+			Result => {
+				let r = self as &Result;
+				sb.write_byte('!');
+				if (r.parent.neq(VOID_T)) {
+					sb.write_str(r.parent.to_str());
+				}
+			}
+			ArrayType => {
+				let a = self as &ArrayType;
+				if (a.is_slice) {
+					sb.write_byte('[');
+					sb.write_str(a.elem_typ.to_str());
+				} elif (a.is_fixed) {
+					sb.write_byte('[');
+					sb.write_str(a.elem_typ.to_str());
+					sb.write_str("; ");
+					sb.write_str(a.size.to_str());
+				} else {
+					sb.write_str("vec[");
+					sb.write_str(a.elem_typ.to_str());
+				}
+				sb.write_byte(']');
+			}
+			MapType => {
+				let m = self as &MapType;
+				sb.write_str("map<str, ");
+				sb.write_str(m.val_typ.to_str());
+				sb.write_byte('>');
+			}
+			TupleType => {
+				let t = self as &TupleType;
+				sb.write_byte('(');
+				for (i, tt in t.typs) {
+					sb.write_str(tt.to_str());
+					if (i < t.typs.len - 1) {
+						sb.write_str(", ");
+					}
+				}
+				sb.write_byte(')');
+			}
+			BoxType => {
+				let b = self as &BoxType;
+				sb.write_str("Box<");
+				sb.write_str(b.elem_typ.to_str());
+				sb.write_byte('>');
+			}
+			Variadic => {
+				let b = self as &Variadic;
+				sb.write_str("...");
+				sb.write_str(b.elem_typ.to_str());
+			}
+		}
+		return sb.to_str();
+	}
+
+	// Using user-writted type
+	pub fn to_ustr(self) str {
+		let mut sb = strings::Builder::new();
+		switch (self) is {
+			SimpleType => {
+				let b = self as &SimpleType;
+				let s = b.expr.to_str();
+				if (s.len > 0) {
+					sb.write_str(s);
+				} else {
+					let ts = b.typ_s;
+					if (ts.module.len > 0 and ts.name != "str") {
+						sb.write_str(ts.module + "::");
+					}
+					sb.write_str(ts.name);
+				}
+			}
+			Reference => {
+				let r = self as &Reference;
+				sb.write_byte('&');
+				sb.write_str(r.parent.to_ustr());
+			}
+			Pointer => {
+				let p = self as &Pointer;
+				sb.write_byte('*');
+				sb.write_str(p.parent.to_ustr());
+			}
+			Optional => {
+				let opt = self as &Optional;
+				sb.write_str(opt.parent.to_ustr());
+				sb.write_byte('?');
+			}
+			Result => {
+				let r = self as &Result;
+				sb.write_byte('!');
+				if (r.parent.neq(VOID_T)) {
+					sb.write_str(r.parent.to_ustr());
+				}
+			}
+			ArrayType => {
+				let a = self as &ArrayType;
+				if (a.is_slice) {
+					sb.write_byte('[');
+					sb.write_str(a.elem_typ.to_str());
+				} elif (a.is_fixed) {
+					sb.write_byte('[');
+					sb.write_str(a.elem_typ.to_str());
+					sb.write_str("; ");
+					sb.write_str(a.size.to_str());
+				} else {
+					sb.write_str("vec[");
+					sb.write_str(a.elem_typ.to_str());
+				}
+				sb.write_byte(']');
+			}
+			MapType => {
+				let m = self as &MapType;
+				sb.write_str("map<str, ");
+				sb.write_str(m.val_typ.to_ustr());
+				sb.write_byte('>');
+			}
+			TupleType => {
+				let t = self as &TupleType;
+				sb.write_byte('(');
+				for (i, tt in t.typs) {
+					sb.write_str(tt.to_ustr());
+					if (i < t.typs.len - 1) {
+						sb.write_str(", ");
+					}
+				}
+				sb.write_byte(')');
+			}
+			BoxType => {
+				let b = self as &BoxType;
+				sb.write_str("Box<");
+				sb.write_str(b.elem_typ.to_ustr());
+				sb.write_byte('>');
+			}
+			Variadic => {
+				let b = self as &Variadic;
+				sb.write_str("...");
+				sb.write_str(b.elem_typ.to_ustr());
+			}
+		}
+		return sb.to_str();
+	}
+
+	pub fn to_gstr(self) str {
+		let mut sb = strings::Builder::new();
+		switch (self) is {
+			SimpleType => {
+				let b = self as &SimpleType;
+				if (b.unresolved) {
+					if (b.expr is Ident) {
+						sb.write_str(b.expr.to_str());
+					} else {
+						sb.write_str(b.expr.to_str().replace("::", "__"));
+					}
+				} else {
+					sb.write_str(self.ts().gname);
+				}
+			}
+			Reference => {
+				let r = self as &Reference;
+				sb.write_str("ref_");
+				sb.write_str(r.parent.to_gstr());
+			}
+			Pointer => {
+				let p = self as &Pointer;
+				sb.write_str("ptr_");
+				sb.write_str(p.parent.to_gstr());
+			}
+			Optional => {
+				sb.write_str(self.parent().to_gstr());
+			}
+			Result => {
+				sb.write_str("Result__");
+				sb.write_str(self.parent().to_gstr());
+			}
+			ArrayType => {
+				let a = self as &ArrayType;
+				if (a.is_slice) {
+					sb.write_str("_Slice__");
+					sb.write_str(a.elem_typ.to_gstr());
+				} elif (a.is_fixed) {
+					sb.write_str("_Array__");
+					sb.write_str(a.elem_typ.to_gstr());
+					sb.write_str("__");
+					sb.write_str(a.size.to_str());
+				} else {
+					sb.write_str("_Vec__");
+					sb.write_str(a.elem_typ.to_gstr());
+				}
+			}
+			MapType => {
+				let m = self as &MapType;
+				sb.write_str("_Map__str__");
+				sb.write_str(m.val_typ.to_gstr());
+			}
+			TupleType => {
+				let t = self as &TupleType;
+				sb.write_str("_Tuple__");
+				for (i, tt in t.typs) {
+					sb.write_str(tt.to_gstr());
+					if (i < t.typs.len - 1) {
+						sb.write_str("__");
+					}
+				}
+			}
+			BoxType => {
+				let b = self as &BoxType;
+				sb.write_str("_Box__");
+				sb.write_str(b.elem_typ.to_gstr());
+			}
+			Variadic => {
+				let b = self as &Variadic;
+				sb.write_str("_Vec__");
+				sb.write_str(b.elem_typ.to_gstr());
+			}
+		}
+		return sb.to_str();
+	}
+
+	// using C format
+	pub fn to_cstr(self) str {
+		let mut sb = strings::Builder::new();
+		switch (self) is {
+			SimpleType => {
+				let b = self as &SimpleType;
+				if (b.unresolved) {
+					if (b.expr is Ident) {
+						sb.write_str(b.expr.to_str());
+					} else {
+						sb.write_str(b.expr.to_str().replace("::", "__"));
+					}
+				} else {
+					let ts = self.ts();
+					if (ts.info is StructInfo) {
+						let si = (ts.info as &StructInfo);
+						if (si.is_extern and !si.is_typedef) {
+							sb.write_str("struct ");
+						}
+					}
+					sb.write_str(ts.gname);
+				}
+			}
+			Reference => {
+				let r = self as &Reference;
+				sb.write_str(r.parent.to_cstr());
+				sb.write_byte('*');
+			}
+			Pointer => {
+				let p = self as &Pointer;
+				sb.write_str(p.parent.to_cstr());
+				sb.write_byte('*');
+			}
+			Optional => {
+				let parent = self.parent();
+				sb.write_str(parent.to_cstr());
+				if (!(parent.is_pointer() or parent is Reference)) {
+					sb.write_str("*");
+				}
+			}
+			Result, ArrayType, MapType, TupleType, BoxType, Variadic => {
+				sb.write_str(self.to_gstr());
+			}
+		}
+		return sb.to_str();
+	}
+}

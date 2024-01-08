@@ -1,0 +1,770 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of  source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+use src::tokens;
+use src::utils;
+
+pub type Expr = EmptyExpr | TypeNode | CastExpr | UnsafeExpr | NullCoalescing
+	| NullCheckExpr | IndirectExpr | Ident | NullLiteral | BoolLiteral | CharLiteral
+	| IntegerLiteral | FloatLiteral | StringLiteral | TupleLiteral | StructLiteral
+	| ArrayLiteral | MapLiteral | BaseExpr | SelfExpr | UnaryExpr | BinaryExpr
+	| TernaryExpr | PostfixExpr | ParExpr | IndexExpr | CallExpr | RangeExpr
+	| BuiltinCallExpr | SelectorExpr | PathExpr | TryExpr | GuardExpr
+	| DotEnumExpr | ArrayDecompose = EmptyExpr{};
+
+pub struct EmptyExpr {
+	pub pos: tokens::Position
+}
+
+pub struct TypeNode {
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct ArrayDecompose {
+	pub mut expr: Expr,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct CastExpr {
+	pub mut expr: Expr,
+	pub mut typ: Type,
+	pub mut is_upcast: bool,
+	pub mut is_downcast: bool,
+	pub pos: tokens::Position
+}
+
+pub struct UnsafeExpr {
+	pub mut expr: Expr,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct NullCoalescing {
+	pub mut expr: Expr,
+	pub mut default_expr: Expr,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct NullCheckExpr {
+	pub mut expr: Expr,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct IndirectExpr {
+	pub mut expr: Expr,
+	pub mut expr_typ: Type,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct Ident {
+	pub name: str,
+	pub scope: ?&Scope,
+	pub pos: tokens::Position,
+	pub mut sym: &Symbol = &Symbol{},
+	pub mut obj: &Object = &Object{},
+	pub mut is_obj: bool,
+	pub mut resolved: bool,
+	pub mut typ: Type
+}
+
+pub struct NullLiteral {
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct BoolLiteral {
+	pub lit: bool,
+	pub pos: tokens::Position,
+	pub mut typ: Type
+}
+
+pub struct CharLiteral {
+	pub lit: str,
+	pub mut is_byte: bool,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct IntegerLiteral {
+	pub lit: str,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct FloatLiteral {
+	pub lit: str,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct StringLiteral {
+	pub lit: str,
+	pub is_raw: bool,
+	pub is_cstr: bool,
+	pub pos: tokens::Position,
+	pub mut typ: Type
+}
+
+pub struct TupleLiteral {
+	pub mut tmp_exprs: vec[Expr],
+	pub mut exprs: vec[Expr],
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct StructLiteral {
+	pub mut name: Expr,
+	pub mut has_base_init: bool,
+	pub mut base_init: Expr,
+	pub mut update_expr: Expr,
+	pub mut update_expr_type: Type,
+	pub mut has_update_expr: bool,
+	pub mut fields: vec[StructLiteralField],
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct StructLiteralField {
+	pub name: str,
+	pub mut expr: Expr,
+	pub mut typ: Type,
+	pub mut expected_type: Type,
+	pub pos: tokens::Position
+}
+
+pub struct ArrayLiteral {
+	pub mut elem_typ: Type,
+	pub mut size: Expr,
+	pub mut elems: vec[Expr],
+	pub is_fixed: bool,
+	pub is_lit: bool,
+	pub has_len: bool,
+	pub mut len_expr: Expr,
+	pub has_cap: bool,
+	pub mut cap_expr: Expr,
+	pub has_init: bool,
+	pub mut init_expr: Expr,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct MapLiteral {
+	pub mut elem_typ: Type,
+	pub has_new: bool,
+	pub mut fields: vec[MapField],
+	pub pos: tokens::Position,
+	pub mut typ: Type
+}
+
+pub struct MapField {
+	pub mut key: Expr,
+	pub mut value: Expr,
+	pub pos: tokens::Position
+}
+
+pub struct BaseExpr {
+	pub mut typ: Type,
+	pub scope: ?&Scope,
+	pub pos: tokens::Position
+}
+
+pub struct SelfExpr {
+	pub mut typ: Type,
+	pub scope: ?&Scope,
+	pub pos: tokens::Position
+}
+
+pub struct UnaryExpr {
+	pub mut right: Expr,
+	pub op: tokens::Kind,
+	pub pos: tokens::Position,
+	pub mut typ: Type
+}
+
+pub struct BinaryExpr {
+	pub mut left: Expr,
+	pub op: tokens::Kind,
+	pub mut right: Expr,
+	pub pos: tokens::Position,
+	pub mut typ: Type
+}
+
+pub struct TernaryExpr {
+	pub mut cond: Expr,
+	pub mut left: Expr,
+	pub mut right: Expr,
+	pub mut typ: Type,
+	pub mut is_comptime: bool,
+	pub mut comptime_result: bool,
+	pub pos: tokens::Position
+}
+
+pub struct PostfixExpr {
+	pub mut left: Expr,
+	pub op: tokens::Kind,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct ParExpr {
+	pub mut expr: Expr,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct IndexExpr {
+	pub mut left: Expr,
+	pub mut index: Expr,
+	pub mut left_typ: Type,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct CallExpr {
+	pub mut left: Expr,
+	pub mut args: vec[CallArg],
+	pub mut info: &Function = &Function{},
+	pub pos: tokens::Position,
+	pub mut typ: Type
+}
+
+impl CallExpr {
+	pub fn get_named_arg(&self, name: str) ?&CallArg {
+		for (&arg in self.args) {
+			if (arg.is_named and arg.name == name) {
+				return arg;
+			}
+		}
+		return null;
+	}
+
+	pub fn real_args_len(&self) i32 {
+		let mut l = 0;
+		for (&arg in self.args) {
+			if (!arg.is_named) {
+				l++;
+			}
+		}
+		return l;
+	}
+}
+
+pub struct CallArg {
+	pub name: str,
+	pub mut expr: Expr,
+	pub is_named: bool,
+	pub pos: tokens::Position
+}
+
+pub struct RangeExpr {
+	pub has_start: bool,
+	pub mut start: Expr,
+	pub has_end: bool,
+	pub mut end: Expr,
+	pub is_inclusive: bool,
+	pub use_colon: bool,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct BuiltinCallExpr {
+	pub mut name: str,
+	pub name_pos: tokens::Position,
+	pub mut args: vec[Expr],
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct SelectorExpr {
+	pub mut left: Expr,
+	pub field_name: str,
+	pub field_pos: tokens::Position,
+	pub mut field_info: &Field = &Field{},
+	pub mut left_typ: Type,
+	pub mut resolved: bool,
+	pub mut require_cast: bool,
+	pub mut cast_to_type: Type,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+impl SelectorExpr {
+	pub fn root(&self) &Expr {
+		let mut root = &self.left;
+		while (root is SelectorExpr) {
+			root = &(root as &SelectorExpr).left;
+		}
+		return root;
+	}
+}
+
+pub struct PathExpr {
+	pub mut left: Expr,
+	pub mut left_info: Symbol,
+	pub field_name: str,
+	pub field_pos: tokens::Position,
+	pub mut field_info: Symbol,
+	pub left_typ: Type,
+	pub is_last: bool,
+	pub mut is_unknown: bool,
+	pub mut is_associated: bool,
+	pub mut has_err: bool,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct TryExpr {
+	pub mut expr: Expr,
+	pub has_orelse: bool,
+	pub mut orelse_val: Expr,
+	pub has_catch: bool,
+	pub mut catcher: Stmt,
+	pub scope: &Scope,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+pub struct GuardExpr {
+	pub name: str,
+	pub mut name_typ: Type,
+	pub is_mut: bool,
+	pub mut expr: Expr,
+	pub mut expr_typ: Type,
+	pub scope: &Scope,
+	pub pos: tokens::Position
+}
+
+pub struct DotEnumExpr {
+	pub field: str,
+	pub mut typ: Type,
+	pub pos: tokens::Position
+}
+
+impl Expr {
+	pub fn is_literal(&self) bool {
+		// NOTE: is `self` a literal, i.e. it does not depend on any other
+		// declarations (C compile time constant).
+		switch (self) is {
+			BoolLiteral, CharLiteral, IntegerLiteral, FloatLiteral, StringLiteral => {
+				return true;
+			}
+			UnaryExpr => return (self as &UnaryExpr).right.is_literal();
+			BinaryExpr => {
+				let b = self as &BinaryExpr;
+				return b.left.is_literal() and b.right.is_literal();
+			}
+			ParExpr => return (self as &ParExpr).expr.is_literal();
+			CastExpr => {
+				let c = self as &CastExpr;
+				return c.expr.is_literal() and (c.typ.is_pointer()
+					or c.typ is Reference or c.typ.is_number());
+			}
+			TernaryExpr => {
+				let t = self as &TernaryExpr;
+				if (t.is_comptime) {
+					if (t.comptime_result) {
+						return t.left.is_literal();
+					}
+					return t.right.is_literal();
+				}
+				return t.cond.is_literal() and t.left.is_literal() and t.right.is_literal();
+			}
+			else => return false;
+		}
+	}
+
+	pub fn is_null_value(&self) bool {
+		let e = self.clear();
+		if (e is Ident) {
+			let i = (e as &Ident);
+			if (i.is_obj) {
+				return (i.obj as &Var).is_null;
+			}
+		}
+		return e is NullLiteral;
+	}
+
+	pub fn clear(&self) Expr {
+		let mut x = self.*;
+		while (x is ParExpr or x is UnsafeExpr) {
+			if (x is UnsafeExpr) {
+				x = (x as &UnsafeExpr).expr;
+			} else {
+				x = (x as &ParExpr).expr;
+			}
+		}
+		return x;
+	}
+
+	pub fn lifetime(&self) LifeTime {
+		let e = self.clear();
+		switch (e) is {
+			Ident => {
+				let i = e as &Ident;
+				if (i.is_obj) {
+					return (i.obj as &Var).lifetime;
+				} elif (i.sym is Const) {
+					return LifeTime{is_static: true};
+				}
+			}
+			SelectorExpr => {
+				let s = e as &SelectorExpr;
+				return s.root().lifetime();
+			}
+			NullCheckExpr => {
+				let n = e as &NullCheckExpr;
+				return n.expr.lifetime();
+			}
+			UnaryExpr => {
+				let u = e as &UnaryExpr;
+				if (u.op == .Amp) {
+					return u.right.lifetime();
+				}
+			}
+			IndexExpr => {
+				let i = e as &IndexExpr;
+				return i.left.lifetime();
+			}
+			else => {}
+		}
+		return LifeTime{};
+	}
+
+	pub fn pos(&self) &tokens::Position {
+		switch (self) is {
+			EmptyExpr => return &(self as &EmptyExpr).pos;
+			TypeNode => return &(self as &TypeNode).pos;
+			ArrayDecompose => return &(self as &ArrayDecompose).pos;
+			CastExpr => return &(self as &CastExpr).pos;
+			UnsafeExpr => return &(self as &UnsafeExpr).pos;
+			NullCoalescing => return &(self as &NullCoalescing).pos;
+			NullCheckExpr => return &(self as &NullCheckExpr).pos;
+			IndirectExpr => return &(self as &IndirectExpr).pos;
+			Ident => return &(self as &Ident).pos;
+			NullLiteral => return &(self as &NullLiteral).pos;
+			BoolLiteral => return &(self as &BoolLiteral).pos;
+			CharLiteral => return &(self as &CharLiteral).pos;
+			IntegerLiteral => return &(self as &IntegerLiteral).pos;
+			FloatLiteral => return &(self as &FloatLiteral).pos;
+			StringLiteral => return &(self as &StringLiteral).pos;
+			TupleLiteral => return &(self as &TupleLiteral).pos;
+			StructLiteral => return &(self as &StructLiteral).pos;
+			ArrayLiteral => return &(self as &ArrayLiteral).pos;
+			MapLiteral => return &(self as &MapLiteral).pos;
+			BaseExpr => return &(self as &BaseExpr).pos;
+			SelfExpr => return &(self as &SelfExpr).pos;
+			UnaryExpr => return &(self as &UnaryExpr).pos;
+			BinaryExpr => return &(self as &BinaryExpr).pos;
+			TernaryExpr => return &(self as &TernaryExpr).pos;
+			PostfixExpr => return &(self as &PostfixExpr).pos;
+			ParExpr => return &(self as &ParExpr).pos;
+			IndexExpr => return &(self as &IndexExpr).pos;
+			CallExpr => return &(self as &CallExpr).pos;
+			RangeExpr => return &(self as &RangeExpr).pos;
+			BuiltinCallExpr => return &(self as &BuiltinCallExpr).pos;
+			SelectorExpr => return &(self as &SelectorExpr).pos;
+			PathExpr => return &(self as &PathExpr).pos;
+			TryExpr => return &(self as &TryExpr).pos;
+			GuardExpr => return &(self as &GuardExpr).pos;
+			DotEnumExpr => return &(self as &DotEnumExpr).pos;
+		}
+		return &EMPTY_POSITION;
+	}
+
+	pub fn typ(&self) Type {
+		switch (self) is {
+			EmptyExpr => return VOID_T;
+			TypeNode => return (self as &TypeNode).typ;
+			ArrayDecompose => return (self as &ArrayDecompose).typ;
+			CastExpr => return (self as &CastExpr).typ;
+			UnsafeExpr => return (self as &UnsafeExpr).typ;
+			NullCoalescing => return (self as &NullCoalescing).typ;
+			NullCheckExpr => return (self as &NullCheckExpr).typ;
+			IndirectExpr => return (self as &IndirectExpr).typ;
+			Ident => return (self as &Ident).typ;
+			NullLiteral => return (self as &NullLiteral).typ;
+			BoolLiteral => return (self as &BoolLiteral).typ;
+			CharLiteral => return (self as &CharLiteral).typ;
+			IntegerLiteral => return (self as &IntegerLiteral).typ;
+			FloatLiteral => return (self as &FloatLiteral).typ;
+			StringLiteral => return (self as &StringLiteral).typ;
+			TupleLiteral => return (self as &TupleLiteral).typ;
+			StructLiteral => return (self as &StructLiteral).typ;
+			ArrayLiteral => return (self as &ArrayLiteral).typ;
+			MapLiteral => return (self as &MapLiteral).typ;
+			BaseExpr => return (self as &BaseExpr).typ;
+			SelfExpr => return (self as &SelfExpr).typ;
+			UnaryExpr => return (self as &UnaryExpr).typ;
+			BinaryExpr => return (self as &BinaryExpr).typ;
+			TernaryExpr => return (self as &TernaryExpr).typ;
+			PostfixExpr => return (self as &PostfixExpr).typ;
+			ParExpr => return (self as &ParExpr).typ;
+			IndexExpr => return (self as &IndexExpr).typ;
+			CallExpr => return (self as &CallExpr).typ;
+			RangeExpr => return (self as &RangeExpr).typ;
+			BuiltinCallExpr => return (self as &BuiltinCallExpr).typ;
+			SelectorExpr => return (self as &SelectorExpr).typ;
+			PathExpr => return (self as &PathExpr).typ;
+			TryExpr => return (self as &TryExpr).typ;
+			DotEnumExpr => return (self as &DotEnumExpr).typ;
+			else => {
+				utils::compiler_error("Expr::pos(): unknown expr type");
+			}
+		}
+		return VOID_T;
+	}
+
+	pub fn to_str(&self) str {
+		switch (self) is {
+			EmptyExpr => return "<empty-expr>";
+			TypeNode => {
+				return (self as &TypeNode).typ.to_ustr();
+			}
+			ArrayDecompose => {
+				let ad = self as &ArrayDecompose;
+				return fmt!("...{}", ad.expr);
+			}
+			CastExpr => {
+				let c = (self as &CastExpr);
+				return fmt!("{} as {}", c.expr, c.typ);
+			}
+			UnsafeExpr => {
+				return fmt!("unsafe { {} }", (self as &UnsafeExpr).expr);
+			}
+			NullCoalescing => {
+				let n = (self as &NullCoalescing);
+				return fmt!("{} ?? {}", n.expr, n.default_expr);
+			}
+			NullCheckExpr => {
+				return fmt!("{}.?", (self as &NullCheckExpr).expr);
+			}
+			IndirectExpr => {
+				return fmt!("{}.*", (self as &IndirectExpr).expr);
+			}
+			Ident => return (self as &Ident).name;
+			NullLiteral => return "null";
+			BoolLiteral => return if ((self as &BoolLiteral).lit) "true" else "false";
+			CharLiteral => {
+				let ch = self as &CharLiteral;
+				return fmt!("{}'{}'", if (ch.is_byte) "b" else "", ch.lit);
+			}
+			IntegerLiteral => {
+				return (self as &IntegerLiteral).lit;
+			}
+			FloatLiteral => {
+				return (self as &FloatLiteral).lit;
+			}
+			StringLiteral => {
+				let s = self as &StringLiteral;
+				return fmt!("{}\"{}\"", if (s.is_raw) "r" else if (s.is_cstr) "c" else "", s.lit);
+			}
+			TupleLiteral => {
+				let mut sb = strings::Builder::new();
+				sb.write_str("(");
+				let t = self as &TupleLiteral;
+				for (i, e in t.exprs) {
+					sb.write_str(e.to_str());
+					if (i < t.exprs.len - 1) {
+						sb.write_str(", ");
+					}
+				}
+				sb.write_str(")");
+				return sb.to_str();
+			}
+			StructLiteral => {
+				let mut sb = strings::Builder::new();
+				let s = self as &StructLiteral;
+				sb.write_str(s.name.to_str() + "{ ");
+				for (i, f in s.fields) {
+					sb.write_str(fmt!("{}: {}", f.name, f.expr));
+					if (i < s.fields.len - 1) {
+						sb.write_str(", ");
+					}
+				}
+				sb.write_str(" }");
+				return sb.to_str();
+			}
+			ArrayLiteral => {
+				let a = self as &ArrayLiteral;
+				let mut sb = strings::Builder::new();
+				if (a.is_fixed) {
+					sb.write_byte('[');
+					sb.write_str(a.elem_typ.to_ustr());
+					sb.write_str("; ");
+					sb.write_str(a.size.to_str());
+				} else {
+					sb.write_str("vec[");
+					sb.write_str(a.elem_typ.to_ustr());
+				}
+				sb.write_byte(']');
+				if (a.elems.len == 0) {
+					sb.write_str("::new(");
+					if (a.has_len) {
+						sb.write_str(a.len_expr.to_str());
+						if (a.has_cap) {
+							sb.write_str(", ");
+						}
+					}
+					if (a.has_cap) {
+						sb.write_str(a.cap_expr.to_str());
+						if (a.has_init) {
+							sb.write_str(", ");
+						}
+					}
+					if (a.has_init) {
+						sb.write_str(a.init_expr.to_str());
+					}
+					sb.write_byte(')');
+				} else {
+					sb.write_byte('{');
+					for (i, e in a.elems) {
+						sb.write_str(e.to_str());
+						if (i < a.elems.len - 1) {
+							sb.write_str(", ");
+						}
+					}
+					sb.write_byte('}');
+				}
+				return sb.to_str();
+			}
+			MapLiteral => {
+				let m = self as &MapLiteral;
+				let mut sb = strings::Builder::new();
+				sb.write_str("map<str, " + m.elem_typ.to_ustr() + ">");
+				if (m.has_new) {
+					sb.write_str("::new()");
+				} else {
+					sb.write_byte('{');
+					for (i, f in m.fields) {
+						sb.write_str(f.key.to_str());
+						sb.write_str(": ");
+						sb.write_str(f.value.to_str());
+						if (i < m.fields.len - 1) {
+							sb.write_str(", ");
+						}
+					}
+					sb.write_byte('}');
+				}
+				return sb.to_str();
+			}
+			BaseExpr => return "base";
+			SelfExpr => return "self";
+			UnaryExpr => {
+				let u = self as &UnaryExpr;
+				return fmt!("{}{}", u.op, u.right);
+			}
+			BinaryExpr => {
+				let b = self as &BinaryExpr;
+				return fmt!("{} {} {}", b.left, b.op, b.right);
+			}
+			TernaryExpr => {
+				let t = self as &TernaryExpr;
+				if (t.is_comptime) {
+					return fmt!("$if ({}) {} $else {}", t.cond, t.left, t.right);
+				}
+				return fmt!("if ({}) {} else {}", t.cond, t.left, t.right);
+			}
+			PostfixExpr => {
+				let p = self as &PostfixExpr;
+				return fmt!("{}{}", p.left, p.op);
+			}
+			ParExpr => {
+				let p = self as &ParExpr;
+				return fmt!("({})", p.expr);
+			}
+			IndexExpr => {
+				let i = self as &IndexExpr;
+				return fmt!("{}[{}]", i.left, i.index);
+			}
+			BuiltinCallExpr => {
+				let bc = self as &BuiltinCallExpr;
+				let mut sb = strings::Builder::new();
+				sb.write_str(bc.name);
+				sb.write_str("!(");
+				for (i, arg in bc.args) {
+					sb.write_str(arg.to_str());
+					if (i < bc.args.len - 1) {
+						sb.write_str(", ");
+					}
+				}
+				sb.write_byte(')');
+				return sb.to_str();
+			}
+			CallExpr => {
+				let c = self as &CallExpr;
+				let mut sb = strings::Builder::new();
+				sb.write_str(c.left.to_str());
+				sb.write_byte('(');
+				for (i, arg in c.args) {
+					if (arg.is_named) {
+						sb.write_str(arg.name);
+						sb.write_str(" = ");
+					}
+					sb.write_str(arg.expr.to_str());
+					if (i < c.args.len - 1) {
+						sb.write_str(", ");
+					}
+				}
+				sb.write_byte(')');
+				return sb.to_str();
+			}
+			RangeExpr => {
+				let r = self as &RangeExpr;
+				let mut sb = strings::Builder::new();
+				if (r.has_start) {
+					sb.write_str(r.start.to_str());
+				}
+				sb.write_str(if (r.is_inclusive) "..." else if (r.use_colon) ":" else "..");
+				if (r.has_end) {
+					sb.write_str(r.end.to_str());
+				}
+				return sb.to_str();
+			}
+			SelectorExpr => {
+				let s = self as &SelectorExpr;
+				return fmt!("{}.{}", s.left, s.field_name);
+			}
+			PathExpr => {
+				let p = self as &PathExpr;
+				return fmt!("{}::{}", p.left, p.field_name);
+			}
+			TryExpr => {
+				let t = self as &TryExpr;
+				let mut sb = strings::Builder::new();
+				sb.write_str("try ");
+				sb.write_str(t.expr.to_str());
+				if (t.has_orelse) {
+					sb.write_str(" orelse ");
+					sb.write_str(t.orelse_val.to_str());
+				} elif (t.has_catch) {
+					sb.write_str(" catch ");
+					sb.write_str(t.catcher.to_str());
+				}
+				return sb.to_str();
+			}
+			GuardExpr => {
+				let g = self as &GuardExpr;
+				let mut sb = strings::Builder::new();
+				sb.write_str("let ");
+				if (g.is_mut) {
+					sb.write_str("mut ");
+				}
+				sb.write_str(g.name);
+				sb.write_str(" = ");
+				sb.write_str(g.expr.to_str());
+				return sb.to_str();
+			}
+			DotEnumExpr => {
+				return "." + (self as &DotEnumExpr).field;
+			}
+		}
+		return "";
+	}
+}

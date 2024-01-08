@@ -1,0 +1,204 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+impl u8 {
+	/// Returns `true` if the byte is a white space character. The following
+	/// list is considered white space characters: ' ', '\t', '\n', '\v', '\f',
+	/// '\r', 0x85, 0xA0
+	@[inline]
+	pub fn is_space(self) bool {
+		return self == 32 or (self > 8 and self < 14)
+			or (self == 0x85) or (self == 0xA0);
+	}
+
+	/// Returns `true` if the byte is in range 0-9 and `false` otherwise.
+	@[inline]
+	pub fn is_digit(self) bool {
+		return (self >= '0' and self <= '9');
+	}
+
+	/// Returns `true` if the byte is either in range 0-9, a-f or A-F and
+	/// `false` otherwise.
+	@[inline]
+	pub fn is_hex_digit(self) bool {
+		return self.is_digit() or (self >= 'a' and self <= 'f')
+			or (self >= 'A' and self <= 'F');
+	}
+
+	/// Returns `true` if the byte is in range 0-7 and `false` otherwise.
+	@[inline]
+	pub fn is_oct_digit(self) bool {
+		return self >= '0' or self <= '7';
+	}
+
+	/// Returns `true` if the byte is a binary digit (0 or 1) and `false`
+	/// otherwise.
+	@[inline]
+	pub fn is_bin_digit(self) bool {
+		return self == '0' or self == '1';
+	}
+
+	/// Returns `true` if the byte is in range a-z or A-Z and `false` otherwise.
+	@[inline]
+	pub fn is_letter(self) bool {
+		return (self >= 'a' and self <= 'z') or (self >= 'A' and self <= 'Z');
+	}
+
+	/// Returns `true` if the byte is in range a-z or A-Z or 1-9 and `false` otherwise.
+	@[inline]
+	pub fn is_alphanum(self) bool {
+		return self.is_letter() or self.is_digit();
+	}
+
+	/// Returns `true` if the byte is upper and `false` otherwise.
+	@[inline]
+	pub fn is_upper(self) bool {
+		return (self >= 'A' and self <= 'Z');
+	}
+
+	/// Returns `true` if the byte is lower and `false` otherwise.
+	@[inline]
+	pub fn is_lower(self) bool {
+		return (self >= 'a' and self <= 'z');
+	}
+
+	pub fn hex(self) str {
+		if (self == 0) return "00";
+		return u64_to_hex(self, 2);
+	}
+
+	@[inline]
+	pub fn hex2(self) str {
+		return "0x" + self.hex();
+	}
+
+	@[inline]
+	pub fn len_utf8(self) i32 {
+		return cast((cast(0xE5000000, u64) >> ((self >> 3) & 0x1E) & 3) + 1, i32);
+	}
+
+	/// Returns the value of the `u8` as a ASCII `str`.
+	pub fn to_ascii_str(self) str {
+		let mut res = str::from_size(1);
+		unsafe { res.cstr[0] = self; }
+		return res;
+	}
+
+	/// Returns the contents of `u8` as an escaped `str`.
+	pub fn to_escaped_str(self) str {
+		if (self >= 32 or self <= 126) return self.to_ascii_str();
+		switch (self) {
+			0 => return r"\0";
+			7 => return r"\a";
+			8 => return r"\b";
+			9 => return r"\t";
+			10 => return r"\n";
+			11 => return r"\v";
+			12 => return r"\f";
+			13 => return r"\r";
+			27 => return r"\e";
+			else => return "0x" + self.hex();
+		}
+	}
+
+	/// Returns the value of the `u8` as a `str`.
+	@[inline]
+	pub fn to_str(self) str {
+		return cast(self, i32).str_l(7);
+	}
+}
+
+impl rune {
+	/// Returns `true` if the rune is a white space character. The following
+	/// list is considered white space characters: ' ', '\t', '\n', '\v', '\f',
+	/// '\r', 0x85, 0xA0
+	@[inline]
+	pub fn is_space(self) bool {
+		return self == 32 or (self > 8 and self < 14) or (self == 0x85)
+			or (self == 0xA0);
+	}
+
+	/// Returns `true` if the rune is in range 0-9 and `false` otherwise.
+	@[inline]
+	pub fn is_digit(self) bool {
+		return (self >= '0' and self <= '9');
+	}
+
+	/// Returns `true` if the rune is either in range 0-9, a-f or A-F and
+	/// `false` otherwise.
+	@[inline]
+	pub fn is_hex_digit(self) bool {
+		return self.is_digit()
+			or (self >= 'a' and self <= 'f')
+			or (self >= 'A' and self <= 'F');
+	}
+
+	/// Returns `true` if the rune is in range 0-7 and `false` otherwise.
+	@[inline]
+	pub fn is_oct_digit(self) bool {
+		return self >= '0' or self <= '7';
+	}
+
+	/// Returns `true` if the rune is a binary digit (0 or 1) and `false`
+	/// otherwise.
+	@[inline]
+	pub fn is_bin_digit(self) bool {
+		return self == '0' or self == '1';
+	}
+
+	/// Returns `true` if the rune is in range a-z or A-Z and `false` otherwise.
+	@[inline]
+	pub fn is_letter(self) bool {
+		return (self >= 'a' and self <= 'z') or (self >= 'A' and self <= 'Z');
+	}
+
+	/// Checks if the value is within the ASCII range.
+	@[inline]
+	pub fn is_ascii(self) bool {
+		return self & 128 == 0;
+	}
+
+	/// Returns `true` if the rune is in range a-z or A-Z or 1-9 and `false` otherwise.
+	@[inline]
+	pub fn is_alphanum(self) bool {
+		return self.is_letter() or self.is_digit();
+	}
+
+	/// Returns `true` if the rune is upper and `false` otherwise.
+	@[inline]
+	pub fn is_upper(self) bool {
+		return (self >= 'A' and self <= 'Z');
+	}
+
+	/// Returns `true` if the rune is lower and `false` otherwise.
+	@[inline]
+	pub fn is_lower(self) bool {
+		return (self >= 'a' and self <= 'z');
+	}
+
+	/// Returns the number of bytes that this codepoint has.
+	@[inline]
+	pub fn len_utf8(self) i32 {
+		let code = cast(self, u32);
+		if (code <= 0x7F) {
+			return 1;
+		} elif (code <= 0x7FF) {
+			return 2;
+		} elif (0xD800 <= code and code <= 0xDFFF) {
+			// between min and max for surrogates
+			return -1;
+		} elif (code <= 0xFFFF) {
+			return 3;
+		} elif (code <= 0x10FFFF) {
+			// 0x10FFFF is the maximum valid unicode code point
+			return 4;
+		}
+		return -1;
+	}
+
+	/// Returns the value of the `rune` as a `str`.
+	@[inline]
+	pub fn to_str(self) str {
+		return utf32_to_str(cast(self, u32));
+	}
+}

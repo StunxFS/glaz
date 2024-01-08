@@ -1,0 +1,72 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+fn utf32_to_str(code: u32) str {
+	let mut buffer = unsafe { cast(mem::alloc(5), *u8) };
+	let res = unsafe { utf32_to_str_no_malloc(code, buffer) };
+	// the buffer was not used at all
+	if (res.len == 0) unsafe {
+		mem::free(buffer);
+	}
+	return res;
+}
+
+@[unsafe]
+pub fn utf32_to_str_no_malloc(code: u32, mut buffer: *u8) str {
+	unsafe {
+		let icode = cast(code, i32);
+		if (icode <= 127) { // 0x7F
+			buffer[0] = cast(icode, u8);
+			buffer[1] = 0;
+			return str::with_len2(buffer, 1);
+		} elif (icode <= 2047) { // 0x7FF
+			buffer[0] = 192 | cast(icode >> 6, u8); // 0xC0 - 110xxxxx
+			buffer[1] = 128 | cast(icode & 63, u8); // 0x80 - 0x3F - 10xxxxxx
+			buffer[2] = 0;
+			return str::with_len2(buffer, 2);
+		} elif (icode <= 65535) { // 0xFFFF
+			buffer[0] = 224 | cast(icode >> 12, u8); // 0xE0 - 1110xxxx
+			buffer[1] = 128 | (cast(icode >> 6, u8) & 63); // 0x80 - 0x3F - 10xxxxxx
+			buffer[2] = 128 | cast(icode & 63, u8); // 0x80 - 0x3F - 10xxxxxx
+			buffer[3] = 0;
+			return str::with_len2(buffer, 3);
+		} elif (icode <= 1114111) { // 0x10FFFF
+			buffer[0] = 240 | cast(icode >> 18, u8); // 0xF0 - 11110xxx
+			buffer[1] = 128 | (cast(icode >> 12, u8) & 63); // 0x80 - 0x3F - 10xxxxxx
+			buffer[2] = 128 | (cast(icode >> 6, u8) & 63); // 0x80 - 0x3F - 10xxxxxx
+			buffer[3] = 128 | cast(icode & 63, u8); // 0x80 - 0x3F - 10xxxxxx
+			buffer[4] = 0;
+			return str::with_len2(buffer, 4);
+		}
+	}
+	return "";
+}
+
+fn get_uchar(s: str, index: i32) i32 {
+	let mut res = 0;
+	if (s.len > 0) {
+		let ch_len = s[index].len_utf8();
+		if (ch_len == 1) {
+			return cast(s[index], u16);
+		}
+		if (ch_len > 1 and ch_len < 5) {
+			let mut lword = 0;
+			for (i in 0..ch_len) {
+				lword = (lword << 8) | cast(s[index + i], i32);
+			}
+			switch (ch_len) {
+				2 => { // 2 byte UTF-8. Byte format: 110XXXXX 10XXXXXX
+					res = (lword & 0x1F00) >> 2 | (lword & 0x3F);
+				}
+				3 => { // 3 byte UTF-8. Byte format: 1110XXXX 10XXXXXX 10XXXXXX
+					res = (lword & 0xF0000) >> 4 | (lword & 0x3F00) >> 2 | (lword & 0x3F);
+				}
+				4 => { // 4 byte UTF-8. Byte format: 11110XXX 10XXXXXX 10XXXXXX 10XXXXXX
+					res = ((lword & 0x07000000) >> 6) | ((lword & 0x003f0000) >> 4) | ((lword & 0x00003F00) >> 2) | (lword & 0x0000003f);
+				}
+				else => {}
+			}
+		}
+	}
+	return res;
+}

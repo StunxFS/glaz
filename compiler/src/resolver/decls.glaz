@@ -1,0 +1,401 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+
+impl Resolver {
+	fn resolve_decls(mut &self, mut decls: vec[ast::Decl]) {
+		for (mut &decl in decls) switch (decl) is {
+			ast::Use => self.resolve_use(decl as &ast::Use);
+			ast::ExternBlock => self.resolve_extern(decl as &ast::ExternBlock);
+			ast::ConstDecl => self.resolve_const(decl as &ast::ConstDecl);
+			ast::ModDecl => self.resolve_mod(decl as &ast::ModDecl);
+			ast::TypeDecl => self.resolve_alias(decl as &ast::TypeDecl);
+			ast::StructDecl => self.resolve_struct(decl as &ast::StructDecl);
+			ast::ImplDecl => self.resolve_impl(decl as &ast::ImplDecl);
+			ast::FnDecl => self.resolve_fn(decl as &ast::FnDecl);
+			ast::TestDecl => self.resolve_test(decl as &ast::TestDecl);
+			else => {}
+		}
+	}
+
+	fn resolve_use(mut &self, decl: &ast::Use) {
+		if (decl.path is ast::Ident) {
+			let mut ident = decl.path as &ast::Ident;
+			if (decl.glob or decl.syms.len > 0) {
+				if (let sym = self.find_sym_in_gmod_or_proj(ident.name)) {
+					ident.sym = sym;
+					ident.resolved = true;
+					self.used_syms[ident.name] = true;
+					if (decl.glob) {
+						for (ssym in sym.get_public_symbols()) {
+							self.check_imported_ident(ident.name, ssym.module(), &decl.pos);
+							self.sf.imported_syms[ident.name] = ssym;
+							self.use_pos[ident.name] = &ident.pos;
+						}
+					} else {
+						self.import_selective_symbols(decl.syms, sym.*);
+					}
+				} else {
+					self.error(fmt!("use of undeclared module `{}`", ident.name), &ident.pos);
+				}
+			} else {
+				self.error("invalid `use` statement", &decl.pos);
+				if (let src_proj = self.table.gmod.find(self.prefs.src_name)) {
+					if (let _ = src_proj.find(ident.name)) {
+						self.help(fmt!("use `src::{}` instead", ident.name));
+					}
+				}
+			}
+		} elif (decl.path is ast::PathExpr) {
+			let mut p = decl.path as &ast::PathExpr;
+			self.resolve_path(p);
+			if (!p.has_err) {
+				if (decl.glob) {
+					for (sym in p.field_info.get_public_symbols()) {
+						let name = sym.name();
+						self.check_imported_ident(name, sym.module(), &decl.pos);
+						self.sf.imported_syms[name] = sym;
+						self.use_pos[name] = decl.path.pos();
+					}
+				} elif (decl.syms.len == 0) {
+					self.check_imported_ident(decl.alias, p.field_info.module(), &decl.pos);
+					self.sf.imported_syms[decl.alias] = p.field_info;
+					self.use_pos[decl.alias] = decl.path.pos();
+					self.used_syms[decl.alias] = false;
+				} else {
+					self.import_selective_symbols(decl.syms, p.field_info, p.is_last);
+				}
+			}
+		}
+	}
+
+	fn import_selective_symbols(
+		mut &self, symbols: vec[ast::UseData], info: ast::Symbol, is_last: bool = false
+	) {
+		for (&ud in symbols) {
+			switch (ud.path) is {
+				ast::SelfExpr => {
+					let pos = ud.path.pos();
+					let name = if (ud.alias.len > 0) ud.alias else info.name();
+					self.check_imported_ident(name, ud.path.to_str(), pos);
+					self.sf.imported_syms[name] = info;
+					self.use_pos[name] = pos;
+					self.used_syms[name] = false;
+				}
+				ast::Ident => {
+					let i = ud.path as &ast::Ident;
+					let sym = self.resolve_symbol(info, is_last, i.name, &i.pos);
+					if (sym !is ast::UnknownSymbol) {
+						self.check_access(i.name, sym.module(), sym.kind(), sym.is_pub(), &i.pos);
+						self.check_imported_ident(ud.alias, sym.module(), &i.pos);
+					}
+					self.sf.imported_syms[ud.alias] = sym;
+					self.use_pos[ud.alias] = &i.pos;
+					self.used_syms[ud.alias] = false;
+				}
+				else => {}
+			}
+		}
+	}
+
+	fn resolve_extern(mut &self, decl: &ast::ExternBlock) {
+		let old_s = self.sym;
+		self.sym = &self.table.cmod;
+		self.resolve_decls(decl.decls);
+		self.sym = old_s;
+	}
+
+	fn resolve_const(mut &self, mut decl: &ast::ConstDecl) {
+		self.check_imported_ident(decl.name, "", &decl.name_pos);
+		_ = self.resolve_type(&decl.typ);
+		if (decl.has_expr) {
+			self.resolve_expr(&decl.expr);
+		}
+	}
+
+	fn resolve_alias(mut &self, mut decl: &ast::TypeDecl) {
+		self.check_imported_ident(decl.name, "", &decl.name_pos);
+		if (decl.is_sumtype) {
+			for (&t in decl.types) {
+				if (self.resolve_type(t)) {
+					if (t is ast::Reference or t is ast::Pointer) {
+						self.error("sum type cannot hold a reference type", &decl.name_pos);
+					}
+				}
+			}
+			if (decl.has_default_expr) {
+				self.resolve_expr(&decl.default_expr);
+			}
+		} else {
+			_ = self.resolve_type(&decl.parent);
+		}
+	}
+
+	fn resolve_mod(mut &self, decl: &ast::ModDecl) {
+		self.check_imported_ident(decl.name, "", &decl.name_pos);
+		let old_s = self.sym;
+		let old_m = self.mods;
+		self.sym = decl.sym;
+		self.mods = decl.module;
+		self.resolve_decls(decl.decls);
+		self.mods = old_m;
+		self.sym = old_s;
+	}
+
+	fn resolve_struct(mut &self, mut decl: &ast::StructDecl) {
+		self.check_imported_ident(decl.name, "", &decl.name_pos);
+		if (decl.has_base) {
+			self.expecting_type = true;
+			self.resolve_expr(&decl.base_expr);
+			self.expecting_type = false;
+			// check inherited fields
+			if (let mut ts = decl.base_ts()) {
+				let base_pos = decl.base_expr.pos();
+				if (ts.kind == .Struct) {
+					let sinfo = (ts.info as &ast::StructInfo);
+					if (let struct_sym = self.sym.find(decl.name)) {
+						if (struct_sym is ast::TypeSymbol) {
+							let mut struct_ts = struct_sym as &ast::TypeSymbol;
+							// check base struct cycle
+							let mut base_ts: ?&ast::TypeSymbol = ts;
+							while (base_ts != null) {
+								if (base_ts.? == struct_ts and !struct_ts.has_base_cycle) {
+									self.error(
+										fmt!("base struct cycle (`{}` and `{}`)", decl.name,
+										ts.name), base_pos
+									);
+									struct_ts.has_base_cycle = true;
+									return;
+								}
+								base_ts = (base_ts.?.info as &ast::StructInfo).base_ts();
+							}
+							push!(ts.inherited_ts, struct_ts);
+						}
+					}
+					if (sinfo.is_extern) {
+						self.error("cannot inherit from a extern struct", base_pos);
+					} elif (sinfo.attrs.contains("sealed")) {
+						self.error("cannot inherit from a sealed struct", base_pos);
+					} else {
+						// check duplicate inherited fields
+						let mut base_ts: ?&ast::TypeSymbol = ts;
+						while (base_ts != null) {
+							for (&f in decl.fields) {
+								if (base_ts.?.has_field(f.name)) {
+									self.error(
+										fmt!(
+											"field `{}.{}` hides inherited field `{}.{}`",
+											decl.name, f.name, base_ts.?.name, f.name
+										),
+										&f.pos
+									);
+								}
+							}
+							base_ts = (base_ts.?.info as &ast::StructInfo).base_ts();
+						}
+						ts.is_base = true;
+					}
+				} else {
+					self.error("expected struct, found " + ts.kind.to_str(), base_pos);
+				}
+			}
+		}
+
+		for (mut &f in decl.fields) {
+			if (self.resolve_type(&f.typ)) {
+				if (f.typ is ast::SimpleType or f.typ is ast::Reference) {
+					let ts = f.typ.ts();
+					if (ts.name == decl.name and ts.module == decl.module) {
+						self.error(
+							fmt!("invalid recursive {} `{}`", if (decl.is_union) "union"
+								else "struct", decl.name), &f.pos
+						);
+						self.help(
+							fmt!("use an optional type instead: `?{}`", f.typ.to_ustr())
+						);
+					}
+				}
+			}
+			if (f.has_default_expr) {
+				self.resolve_expr(&f.default_expr);
+			}
+		}
+	}
+
+	fn resolve_impl(mut &self, decl: &ast::ImplDecl) {
+		if (self.resolve_type(&decl.typ)) {
+			let impl_pos = decl.typ.pos();
+			let mut ts = decl.typ.ts();
+			if (decl.typ is ast::Reference or decl.typ is ast::Pointer
+				or decl.typ is ast::Optional) {
+				self.error("invalid type to add methods", impl_pos);
+				if (decl.typ is ast::Reference) {
+					self.help("use a reference to the receiver instead: `&self`");
+				}
+			}
+
+			self.resolve_decls(decl.decls);
+			for (f in decl.decls) {
+				if (f is ast::FnDecl) {
+					let func = f as &ast::FnDecl;
+					if (func.is_method) {
+						try ts.add_method(func.info) catch {
+							self.error(err.msg, &func.info.pos);
+						};
+					} else {
+						if (ts.kind == .Enum) {
+							self.error("cannot add associated functions to an enum", &func.info.pos);
+						} else {
+							try ts.add(func.info) catch {
+								self.error(err.msg, &func.info.pos);
+							};
+						}
+					}
+				} else {
+					self.error("`impl` blocks can only contain functions and methods", impl_pos);
+				}
+			}
+
+			// check inherited methods
+			if (ts.kind == .Struct and !ts.has_base_cycle) {
+				let info = ts.info as &ast::StructInfo;
+				let mut base_ts = info.base_ts();
+				while (base_ts != null) {
+					for (&m in ts.methods) {
+						if (let bm = base_ts.?.find_method(m.name)) {
+							let is_virtual = bm.attrs.contains("virtual");
+							let is_abstract = bm.attrs.contains("abstract");
+							let is_override = m.attrs.contains("override");
+							if ((!(is_virtual or is_override) or (is_virtual and !is_override))) {
+								self.error(
+									fmt!(
+										"method `{}.{}` hides inherited method `{}.{}`",
+										ts.name, m.name, base_ts.?.name, m.name
+									),
+									&m.pos
+								);
+								if ((is_virtual or is_abstract) and !is_override) {
+									self.help(
+										"use the `override` attribute if hiding was intentional"
+									);
+								}
+							}
+							break;
+						}
+					}
+					for (&m in base_ts.?.methods) {
+						if (m.attrs.contains("abstract")) {
+							if (let nm = ts.find_method(m.name)) {
+								if (!nm.is_compatible_with(m)) {
+									self.error(
+										fmt!(
+											"method `{}.{}` is incompatible with "
+											"base method `{}.{}`", ts.name, m.name,
+											base_ts.?.name, m.name
+										),
+										&nm.pos
+									);
+								}
+							} else {
+								self.error(
+									fmt!(
+										"`{}` does not implement abstract method `{}.{}`",
+										ts.name, base_ts.?.name, m.name
+									),
+									&m.pos
+								);
+							}
+						}
+					}
+					base_ts = (base_ts.?.info as &ast::StructInfo).base_ts();
+				}
+			}
+		}
+	}
+
+	fn resolve_fn(mut &self, mut decl: &ast::FnDecl) {
+		if (!(decl.is_method or decl.is_associated) and !decl.is_extern) {
+			self.check_imported_ident(decl.name, "", &decl.name_pos);
+		}
+		if (decl.is_method) {
+			let is_virtual = decl.attrs.contains("virtual");
+			let is_abstract = decl.attrs.contains("abstract");
+			let is_override = decl.attrs.contains("override");
+			if (self.resolve_type(&decl.rec_typ)) {
+				let mut self_ts = decl.rec_typ.ts();
+				if (self_ts.kind == .Struct and !self_ts.has_base_cycle) {
+					let sinfo = self_ts.info as &ast::StructInfo;
+					if (is_override and !sinfo.has_base) {
+						self.error(
+							fmt!("`{}` cannot be marked as override", decl.info.name),
+							&decl.info.pos
+						);
+						self.note(fmt!("struct `{}` has no base", self_ts.name));
+					}
+					if (is_virtual or is_abstract) {
+						self_ts.has_virtual_or_abstracts_methods = true;
+					}
+					if (is_abstract) {
+						if (!sinfo.attrs.contains("abstract")) {
+							self.error(
+								"abstract methods cannot be declared in non-abstract structs",
+								&decl.info.pos
+							);
+						}
+					} elif (is_override) {
+						let mut base_ts = sinfo.base_ts();
+						while (base_ts != null) {
+							if (let om = base_ts.?.find_method(decl.name)) {
+								if (om.attrs.contains("virtual")) {
+									if (!decl.info.is_compatible_with(om)) {
+										self.error(
+											fmt!(
+												"overriding method `{}.{}` is incompatible with "
+												"base method `{}.{}`", self_ts.name, om.name,
+												base_ts.?.name, om.name
+											),
+											&decl.info.pos
+										);
+									}
+								} elif (!om.attrs.contains("abstract")) {
+									self.error(
+										fmt!(
+											"method `{}.{}` is not marked as virtual or abstract",
+											base_ts.?.name, om.name
+										),
+										&decl.info.pos
+									);
+								}
+								break;
+							} else {
+								self.error(
+									fmt!(
+										"no suitable method found to override with `{}.{}`",
+										self_ts.name, decl.name
+									),
+									&decl.info.pos
+								);
+								break;
+							}
+							base_ts = (base_ts.?.info as &ast::StructInfo).base_ts();
+						}
+					}
+				}
+			}
+		}
+		for (mut &arg in decl.args) {
+			_ = self.resolve_type(&arg.typ);
+			if (arg.has_default_expr) {
+				self.resolve_expr(&arg.default_expr);
+			}
+		}
+		self.func = decl;
+		_ = self.resolve_type(&decl.ret_typ);
+		self.resolve_stmts(decl.stmts);
+	}
+
+	fn resolve_test(mut &self, decl: &ast::TestDecl) {
+		self.resolve_stmts(decl.stmts);
+	}
+}

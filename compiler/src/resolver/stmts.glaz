@@ -1,0 +1,128 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use src::ast;
+
+impl Resolver {
+	fn resolve_stmts(mut &self, mut stmts: vec[ast::Stmt]) {
+		for (mut &stmt in stmts) self.resolve_stmt(stmt);
+	}
+
+	fn resolve_stmt(mut &self, mut stmt: &ast::Stmt) {
+		switch (stmt) is {
+			ast::ExprStmt => {
+				let mut es = stmt as &ast::ExprStmt;
+				self.resolve_expr(&es.expr);
+			}
+			ast::LabelStmt => {}
+			ast::GotoStmt => {
+				let g = stmt as &ast::GotoStmt;
+				if (let mut l = self.func.scope.lookup(g.label)) {
+					if (l is ast::Label) {
+						(l as &ast::Label).is_used = true;
+					} else {
+						self.error(fmt!("`{}` is not a label", g.label), &g.label_pos);
+					}
+				} else {
+					self.error(fmt!("label `{}` not defined", g.label), &g.label_pos);
+				}
+			}
+			ast::AssignStmt => {
+				let mut a = stmt as &ast::AssignStmt;
+				for (mut &l in a.left) {
+					if (a.is_decl) {
+						if (l is ast::TupleLiteral) {
+							let mut t = l as &ast::TupleLiteral;
+							for (mut &e in t.exprs) {
+								if (e is ast::Ident) {
+									self.check_assign_ident(e.* as &ast::Ident);
+								} else {
+									self.resolve_expr(e);
+								}
+							}
+						} elif (l is ast::Ident) {
+							self.check_assign_ident(l as &ast::Ident);
+						}
+					} else {
+						self.resolve_expr(l);
+					}
+				}
+				for (mut &r in a.right) {
+					self.resolve_expr(r);
+				}
+			}
+			ast::LoopStmt => {
+				let mut l = stmt as &ast::LoopStmt;
+				self.resolve_stmt(&l.stmt);
+			}
+			ast::ForInStmt => {
+				let mut f = stmt as &ast::ForInStmt;
+				self.resolve_expr(&f.expr);
+				self.resolve_stmt(&f.stmt);
+			}
+			ast::WhileStmt => {
+				let mut w = stmt as &ast::WhileStmt;
+				self.resolve_expr(&w.cond);
+				self.resolve_stmt(&w.stmt);
+			}
+			ast::DoWhileStmt => {
+				let mut w = stmt as &ast::DoWhileStmt;
+				self.resolve_expr(&w.cond);
+				self.resolve_stmt(&w.stmt);
+			}
+			ast::SwitchStmt => {
+				let mut s = stmt as &ast::SwitchStmt;
+				self.resolve_expr(&s.cond);
+				for (mut &b in s.branches) {
+					if (!b.is_else) {
+						for (mut &e in b.exprs) {
+							self.resolve_expr(e);
+						}
+						if (b.has_cond) {
+							self.resolve_expr(&b.cond);
+						}
+					}
+					self.resolve_stmt(&b.stmt);
+				}
+			}
+			ast::IfStmt => {
+				let mut i = stmt as &ast::IfStmt;
+				for (mut &b in i.branches) {
+					if (!b.is_else) {
+						if (i.is_comptime) {
+							b.skip = !self.resolve_comptime_flag(&b.cond);
+						} else {
+							self.resolve_expr(&b.cond);
+						}
+					}
+					self.resolve_stmt(&b.stmt);
+				}
+			}
+			ast::Block => {
+				let b = stmt as &ast::Block;
+				self.resolve_stmts(b.stmts);
+			}
+			ast::DeferStmt => {
+				self.resolve_stmt(&(stmt as &ast::DeferStmt).stmt);
+			}
+			ast::ReturnStmt => {
+				let mut r = (stmt as &ast::ReturnStmt);
+				if (r.has_expr) {
+					self.resolve_expr(&r.expr);
+				}
+			}
+			ast::RaiseStmt => {
+				self.resolve_expr(&(stmt as &ast::RaiseStmt).msg);
+			}
+			else => {}
+		}
+	}
+
+	fn check_assign_ident(mut &self, mut i: &ast::Ident) {
+		if (i.typ.neq(ast::VOID_T)) {
+			_ = self.resolve_type(&i.typ);
+		}
+		i.resolved = true;
+		i.is_obj = true;
+	}
+}
