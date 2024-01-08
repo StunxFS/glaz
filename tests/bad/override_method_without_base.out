@@ -1,0 +1,6 @@
+tests/bad/override_method_without_base.glaz:6:9: error: `x` cannot be marked as override
+     | 
+   6 |     fn x(&self) {}
+     |        ^^^^^^^^
+     = note: struct `St` has no base
+glaz error: could not compile `override_method_without_base`, aborting due to previous error.

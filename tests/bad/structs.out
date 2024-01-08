@@ -1,0 +1,10 @@
+tests/bad/structs.glaz:10:6: error: struct `Account` has no field `ff`
+     | 
+  10 |     ff: 0x1A
+     |     ^^
+tests/bad/structs.glaz:14:11: error: expected type `i32`, found `bool`
+     | 
+  14 |     age: true
+     |          ^^^^
+     = note: in field `age` of struct `Account`
+glaz error: could not compile `structs`, aborting due to 2 previous errors.

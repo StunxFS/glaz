@@ -1,0 +1,21 @@
+tests/bad/null_literal.glaz:2:12: error: cannot assign `null` to a non-optional variable `d`
+     | 
+   2 |   let d = null;
+     |           ^^^^
+tests/bad/null_literal.glaz:3:31: error: cannot assign `null` to a non-optional variable `x`
+     | 
+   3 |   unsafe { let mut x: &i32 = null; }
+     |                              ^^^^
+tests/bad/null_literal.glaz:2:8: warning: variable `d` declared but never used
+     | 
+   2 |   let d = null;
+     |       ^
+     = help: if this is intentional, prefix it with an underscore: `_d`
+     = help: or use the blank identifier (`_`)
+tests/bad/null_literal.glaz:3:21: warning: variable `x` declared but never used
+     | 
+   3 |   unsafe { let mut x: &i32 = null; }
+     |                    ^
+     = help: if this is intentional, prefix it with an underscore: `_x`
+     = help: or use the blank identifier (`_`)
+glaz error: could not compile `null_literal`, aborting due to 2 previous errors.

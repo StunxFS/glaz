@@ -1,0 +1,11 @@
+tests/bad/bad_call_func.glaz:5:4: error: too many arguments to function `y`
+     | 
+   5 |   y(10, 11);
+     |   ^^^^^^^^^
+     = note: expected 1 argument(s), not 2
+tests/bad/bad_call_func.glaz:6:4: error: too few arguments to function `z`
+     | 
+   6 |   z(10);
+     |   ^^^^^
+     = note: expected 2 argument(s), not 1
+glaz error: could not compile `bad_call_func`, aborting due to 2 previous errors.

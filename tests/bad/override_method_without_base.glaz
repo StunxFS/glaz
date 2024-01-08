@@ -1,0 +1,9 @@
+struct St {
+}
+
+impl St {
+    @[override]
+    fn x(&self) {}
+}
+
+fn main() {}

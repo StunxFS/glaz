@@ -1,0 +1,6 @@
+tests/bad/methods.glaz:14:4: error: type `Suma` has no method `sub`
+     | 
+  14 |   x.sub();
+     |   ^^^^^^^
+     = help: 1 possibility: `add`
+glaz error: could not compile `methods`, aborting due to previous error.

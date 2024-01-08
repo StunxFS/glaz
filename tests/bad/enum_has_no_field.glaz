@@ -1,0 +1,7 @@
+enum A {
+  B
+}
+
+fn main() {
+  let mut x = A::C;
+}

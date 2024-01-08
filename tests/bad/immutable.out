@@ -1,0 +1,12 @@
+tests/bad/immutable.glaz:3:4: error: cannot assign twice to immutable variable `x`
+     | 
+   3 |   x = 10;
+     |   ^
+     = note: declare it with `mut` to make it mutable: `mut x`
+tests/bad/immutable.glaz:2:8: warning: variable `x` declared but never used
+     | 
+   2 |   let x = 100;
+     |       ^
+     = help: if this is intentional, prefix it with an underscore: `_x`
+     = help: or use the blank identifier (`_`)
+glaz error: could not compile `immutable`, aborting due to previous error.

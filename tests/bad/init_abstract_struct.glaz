@@ -1,0 +1,6 @@
+@[abstract]
+struct Abs { }
+
+fn main() {
+	_ = Abs{};
+}

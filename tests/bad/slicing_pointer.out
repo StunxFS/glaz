@@ -1,0 +1,5 @@
+tests/bad/slicing_pointer.glaz:3:16: error: cannot slice a pointer
+     | 
+   3 | 	_ = unsafe { x[1:5] };
+     | 	             ^^^^^^
+glaz error: could not compile `slicing_pointer`, aborting due to previous error.

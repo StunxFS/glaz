@@ -1,0 +1,5 @@
+tests/bad/expecting_named_arg.glaz:4:12: error: expected named argument
+     | 
+   4 |   x(a=10, 1);
+     |           ^
+glaz error: could not compile `expecting_named_arg`, aborting due to previous error.

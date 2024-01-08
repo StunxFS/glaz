@@ -1,0 +1,15 @@
+enum GameState {
+	Intro,
+	MainMenu,
+	CityMap = 5,
+	Credits = 9
+}
+
+fn main() {
+	_ = cast(0, GameState); // OK
+	_ = cast(1, GameState); // OK
+	_ = cast(5, GameState); // OK
+	_ = cast(9, GameState); // OK
+
+	_ = cast(10, GameState); // BAD
+}

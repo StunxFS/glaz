@@ -1,0 +1,5 @@
+tests/bad/modifying_multi_level_pointers.glaz:5:3: error: dereference of pointer is unsafe and requires `unsafe` block
+     | 
+   5 | 	v.*.* = 1;
+     | 	^^^^^
+glaz error: could not compile `modifying_multi_level_pointers`, aborting due to previous error.

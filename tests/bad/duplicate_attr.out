@@ -1,0 +1,5 @@
+tests/bad/duplicate_attr.glaz:1:10: error: duplicate `copy` attribute
+     | 
+   1 | @[copy; copy]
+     |         ^^^^
+glaz error: could not compile `duplicate_attr`, aborting due to previous error.

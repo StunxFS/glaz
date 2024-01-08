@@ -1,0 +1,8 @@
+fn x() (i32, bool) {
+	return (true, 1);
+}
+
+fn x2() (i32, i32) { return (1, 2); }
+fn x3() (i64, i64) { return x(); }
+
+fn main() {}

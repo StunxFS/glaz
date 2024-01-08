@@ -1,0 +1,3 @@
+fn main() {
+  unsafe { _ = cast(3, rawptr); }
+}

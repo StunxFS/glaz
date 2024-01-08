@@ -1,0 +1,5 @@
+tests/bad/if_stmt.glaz:2:8: error: non-bool expression used as condition
+     | 
+   2 |   if ("") {}
+     |       ^^
+glaz error: could not compile `if_stmt`, aborting due to previous error.

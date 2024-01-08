@@ -1,0 +1,4 @@
+fn main() {
+  let d = null;
+  unsafe { let mut x: &i32 = null; }
+}

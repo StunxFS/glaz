@@ -1,0 +1,21 @@
+tests/bad/pointer_arithmetic.glaz:4:7: error: invalid operator `+` to `*i32` and `*i32`
+     | 
+   4 | 	_ = p + p;
+     | 	    ^^^^^
+tests/bad/pointer_arithmetic.glaz:5:7: error: invalid operator `*` to `*i32` and `*i32`
+     | 
+   5 | 	_ = p * p;
+     | 	    ^^^^^
+tests/bad/pointer_arithmetic.glaz:6:7: error: invalid operator `*` to `*i32` and `untyped_int`
+     | 
+   6 | 	_ = p * 2;
+     | 	    ^^^^^
+tests/bad/pointer_arithmetic.glaz:7:7: error: pointer arithmetic is only allowed inside `unsafe` block
+     | 
+   7 | 	_ = p + 5;
+     | 	    ^^^^^
+tests/bad/pointer_arithmetic.glaz:8:7: error: pointer arithmetic is only allowed inside `unsafe` block
+     | 
+   8 | 	_ = p - p;
+     | 	    ^^^^^
+glaz error: could not compile `pointer_arithmetic`, aborting due to 5 previous errors.

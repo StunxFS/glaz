@@ -1,0 +1,4 @@
+fn main() {
+  _ = true + false;
+  _ = true and (22 or "");
+}

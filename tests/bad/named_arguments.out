@@ -1,0 +1,15 @@
+tests/bad/named_arguments.glaz:4:6: error: argument `a` is not optional
+     | 
+   4 |   x(a=10, b=1);
+     |     ^^^^
+tests/bad/named_arguments.glaz:4:12: error: function `x` does not have an argument called `b`
+     | 
+   4 |   x(a=10, b=1);
+     |           ^^^
+tests/bad/named_arguments.glaz:1:7: warning: argument `a` declared but never used
+     | 
+   1 | fn x(a: i32) {}
+     |      ^^^^^^
+     = help: if this is intentional, prefix it with an underscore: `_a`
+     = help: or use the blank identifier (`_`)
+glaz error: could not compile `named_arguments`, aborting due to 2 previous errors.

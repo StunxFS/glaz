@@ -1,0 +1,13 @@
+enum BadField {
+    Field = true
+}
+
+enum DupFields {
+	Field1, // 0
+	Field2 = 0, // BAD
+
+	Field3 = 1,
+	Field4 = 1
+}
+
+fn main() {}

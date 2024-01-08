@@ -1,0 +1,8 @@
+fn x() (i32, bool) {
+  return (10*10, true);
+}
+
+fn main() {
+  let a = x();
+  _ = a.s3;
+}

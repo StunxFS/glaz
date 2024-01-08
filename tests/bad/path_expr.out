@@ -1,0 +1,5 @@
+tests/bad/path_expr.glaz:4:4: error: bad use of path expression
+     | 
+   4 |   a()::s1;
+     |   ^^^^^^^
+glaz error: could not compile `path_expr`, aborting due to previous error.

@@ -1,0 +1,6 @@
+tests/bad/recursive_struct.glaz:10:3: error: invalid recursive struct `Recursive`
+     | 
+  10 | 	a: Recursive // FAIL
+     | 	^
+     = help: use an optional type instead: `?Recursive`
+glaz error: could not compile `recursive_struct`, aborting due to previous error.

@@ -1,0 +1,47 @@
+tests/bad/use_stmt.glaz:1:6: error: use of undeclared module `undeclared_module`
+     | 
+   1 | use undeclared_module::*;
+     |     ^^^^^^^^^^^^^^^^^
+tests/bad/use_stmt.glaz:8:2: error: the name `init` is defined multiple times
+     | 
+   8 | use minetest::init;
+     | ^^^^^^^^^^^^^^^^^^
+     = tests/bad/use_stmt.glaz:7:6: note: previous import of the function `init` was here
+     | 
+   7 | use minetest::init;
+     |     ^^^^^^^^^^^^^^
+tests/bad/use_stmt.glaz:11:2: error: the name `mine_init` is defined multiple times
+     | 
+  11 | use minetest::init as mine_init;
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = tests/bad/use_stmt.glaz:10:6: note: previous import of the function `mine_init` was here
+     | 
+  10 | use minetest::init as mine_init;
+     |     ^^^^^^^^^^^^^^
+tests/bad/use_stmt.glaz:13:24: error: the name `minetest` is defined multiple times
+     | 
+  13 | use minetest::{ self, self, mine_drop };
+     |                       ^^^^
+     = tests/bad/use_stmt.glaz:13:18: note: previous import of the module `minetest` was here
+     | 
+  13 | use minetest::{ self, self, mine_drop };
+     |                 ^^^^
+     = help: you can use `as` to change the binding name of the import: minetest as
+     | other_minetest
+tests/bad/use_stmt.glaz:13:30: error: could not find `mine_drop` in `minetest`
+     | 
+  13 | use minetest::{ self, self, mine_drop };
+     |                             ^^^^^^^^^
+tests/bad/use_stmt.glaz:13:24: warning: module `minetest` is imported but never used
+     | 
+  13 | use minetest::{ self, self, mine_drop };
+     |                       ^^^^
+tests/bad/use_stmt.glaz:11:6: warning: function `mine_init` is imported but never used
+     | 
+  11 | use minetest::init as mine_init;
+     |     ^^^^^^^^^^^^^^
+tests/bad/use_stmt.glaz:8:6: warning: function `init` is imported but never used
+     | 
+   8 | use minetest::init;
+     |     ^^^^^^^^^^^^^^
+glaz error: could not compile `use_stmt`, aborting due to 5 previous errors.

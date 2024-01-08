@@ -1,0 +1,17 @@
+tests/bad/try_expr.glaz:10:3: error: function `try_expr::x` returns a result
+     | 
+  10 | 	x();
+     | 	^^^
+     = help: should handle this with `try`
+tests/bad/try_expr.glaz:10:3: warning: expression evaluated but not used
+     | 
+  10 | 	x();
+     | 	^^^
+tests/bad/try_expr.glaz:11:22: error: invalid `catch` statement with non-void expression
+     | 
+  11 | 	_ = try x2() catch {};
+     | 	                   ^
+     = note: the `catch` statement should have a `@[noreturn]` function/method call, or
+     | `return`, `break` or `continue`
+     = help: use `orelse` if you want to use an alternative value
+glaz error: could not compile `try_expr`, aborting due to 2 previous errors.

@@ -1,0 +1,19 @@
+tests/bad/bad_fmt.glaz:7:12: error: format argument must be a string literal
+     | 
+   7 | 	_ = fmt!(p);
+     | 	         ^
+tests/bad/bad_fmt.glaz:8:12: error: first argument is not valid
+     | 
+   8 | 	_ = fmt!("");
+     | 	         ^^
+tests/bad/bad_fmt.glaz:9:7: error: 2 positional argument(s) in format string, but there is 3 argument(s)
+     | 
+   9 | 	_ = fmt!("{}, {}", 1, 2, 3);
+     | 	    ^^^^^^^^^^^^^^^^^^^^^^^
+tests/bad/bad_fmt.glaz:6:7: warning: variable `p` declared but never used
+     | 
+   6 | 	let p = "";
+     | 	    ^
+     = help: if this is intentional, prefix it with an underscore: `_p`
+     = help: or use the blank identifier (`_`)
+glaz error: could not compile `bad_fmt`, aborting due to 3 previous errors.

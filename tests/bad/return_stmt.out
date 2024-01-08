@@ -1,0 +1,10 @@
+tests/bad/return_stmt.glaz:2:4: error: unexpected non-void return value in void function
+     | 
+   2 |   return true;
+     |   ^^^^^^^^^^^
+tests/bad/return_stmt.glaz:6:4: error: expected type `i32`, found `bool`
+     | 
+   6 |   return false;
+     |   ^^^^^^^^^^^^
+     = note: in return of function `x2`
+glaz error: could not compile `return_stmt`, aborting due to 2 previous errors.

@@ -1,0 +1,9 @@
+tests/bad/impl_block.glaz:3:7: error: `impl` blocks can only contain functions and methods
+     | 
+   3 | impl St {
+     |      ^^
+tests/bad/impl_block.glaz:11:6: error: cannot add associated functions to an enum
+     | 
+  11 | 	fn assoc_fn() {}
+     | 	   ^^^^^^^^^^
+glaz error: could not compile `impl_block`, aborting due to 2 previous errors.

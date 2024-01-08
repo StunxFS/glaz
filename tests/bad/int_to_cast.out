@@ -1,0 +1,5 @@
+tests/bad/int_to_cast.glaz:14:12: error: 10 does not represent a valid value of enum `GameState`
+     | 
+  14 | 	_ = cast(10, GameState); // BAD
+     | 	         ^^
+glaz error: could not compile `int_to_cast`, aborting due to previous error.

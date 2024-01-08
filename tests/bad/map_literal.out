@@ -1,0 +1,7 @@
+tests/bad/map_literal.glaz:2:7: error: invalid map literal
+     | 
+   2 | 	_ = map<str, i32>{};
+     | 	    ^^^^^^^^^^^^^
+     = note: 1 or more key-values are expected
+     = help: use `map<str, T>::new()` instead
+glaz error: could not compile `map_literal`, aborting due to previous error.

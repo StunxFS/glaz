@@ -1,0 +1,13 @@
+struct RecursivePtr {
+	a: *RecursivePtr // OK
+}
+
+struct RecursiveRef {
+	a: ?&RecursiveRef // OK
+}
+
+struct Recursive {
+	a: Recursive // FAIL
+}
+
+fn main() {}

@@ -1,0 +1,4 @@
+fn main() {
+	let x: *i32 = &0;
+	_ = unsafe { x[1:5] };
+}

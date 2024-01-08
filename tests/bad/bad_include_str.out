@@ -1,0 +1,5 @@
+tests/bad/bad_include_str.glaz:2:20: error: cannot include `nonexistent.file` (does not exist)
+     | 
+   2 | 	_ = include_str!("nonexistent.file");
+     | 	                 ^^^^^^^^^^^^^^^^^^
+glaz error: could not compile `bad_include_str`, aborting due to previous error.

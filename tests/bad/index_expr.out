@@ -1,0 +1,6 @@
+tests/bad/index_expr.glaz:2:8: error: type `untyped_int` does not support indexing
+     | 
+   2 |   _ = 2[1];
+     |       ^^^^
+     = note: only `str`, pointers and arrays supports indexing
+glaz error: could not compile `index_expr`, aborting due to previous error.

@@ -1,0 +1,7 @@
+fn xx() {}
+
+fn xx() {}
+
+fn main() {
+  xx();
+}

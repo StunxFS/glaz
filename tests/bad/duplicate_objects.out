@@ -1,0 +1,5 @@
+tests/bad/duplicate_objects.glaz:4:14: error: the name `x` is defined multiple times
+     | 
+   4 | 		let mut x = 10;
+     | 		          ^
+glaz error: could not compile `duplicate_objects`, aborting due to previous error.

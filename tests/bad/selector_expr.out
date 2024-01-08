@@ -1,0 +1,10 @@
+tests/bad/selector_expr.glaz:7:10: error: type `(i32, bool)` has no field `s3`
+     | 
+   7 |   _ = a.s3;
+     |         ^^
+     = help: 2 possibilities: `s1`, `s2`
+tests/bad/selector_expr.glaz:7:8: error: invalid use of void expression
+     | 
+   7 |   _ = a.s3;
+     |       ^^^^
+glaz error: could not compile `selector_expr`, aborting due to 2 previous errors.

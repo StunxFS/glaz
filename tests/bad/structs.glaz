@@ -1,0 +1,16 @@
+struct Account {
+  name: str,
+  age: i32
+}
+
+fn main() {
+  _ = Account{
+    name: "Epa!",
+    age: 10,
+    ff: 0x1A
+  };
+  _ = Account{
+    name: "Epa!",
+    age: true
+  };
+}

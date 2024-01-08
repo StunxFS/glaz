@@ -1,0 +1,9 @@
+tests/bad/array_decompose.glaz:5:6: error: too many arguments to function `simple`
+     | 
+   5 |     simple(1, 2, ...x);
+     |     ^^^^^^^^^^^^^^^^^^
+tests/bad/array_decompose.glaz:6:19: error: decomposition can only be used on arrays
+     | 
+   6 |     simple(1, ...5);
+     |                  ^
+glaz error: could not compile `array_decompose`, aborting due to 2 previous errors.

@@ -1,0 +1,5 @@
+tests/bad/duplicate_functions.glaz:3:5: error: the name `xx` is defined multiple times
+     | 
+   3 | fn xx() {}
+     |    ^^
+glaz error: could not compile `duplicate_functions`, aborting due to previous error.

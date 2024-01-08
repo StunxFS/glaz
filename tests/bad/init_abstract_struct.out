@@ -1,0 +1,5 @@
+tests/bad/init_abstract_struct.glaz:5:7: error: cannot create instance of abstract struct `Abs`
+     | 
+   5 | 	_ = Abs{};
+     | 	    ^^^
+glaz error: could not compile `init_abstract_struct`, aborting due to previous error.

@@ -1,0 +1,10 @@
+fn x() {
+  return true;
+}
+
+fn x2() i32 {
+  return false;
+}
+
+fn main() {
+}

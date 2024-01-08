@@ -1,0 +1,6 @@
+fn main() {
+	let x = 9;
+	let y: *i32 = &x;
+	let mut v = &y;
+	v.*.* = 1;
+}

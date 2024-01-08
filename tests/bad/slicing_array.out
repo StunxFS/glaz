@@ -1,0 +1,6 @@
+tests/bad/slicing_array.glaz:2:7: error: invalid slice expression for array
+     | 
+   2 | 	_ = vec[i32]{ 1, 2, 3, 4 }[:];
+     | 	    ^^^^^^^^^^^^^^^^^^^^^^^^^
+     = help: consider calling the `clone` method instead
+glaz error: could not compile `slicing_array`, aborting due to previous error.

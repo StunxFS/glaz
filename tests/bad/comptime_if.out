@@ -1,0 +1,17 @@
+tests/bad/comptime_if.glaz:2:11: error: unknown compiler flag `_UNKNOWN_COMPILER_FLAG_`
+     | 
+   2 |     $if (_UNKNOWN_COMPILER_FLAG_) {}
+     |          ^^^^^^^^^^^^^^^^^^^^^^^
+tests/bad/comptime_if.glaz:3:11: error: non-boolean expression used as comptime `if` condition
+     | 
+   3 |     $if (FLAG & 4) {} // invalid expression
+     |          ^^^^^^^^
+tests/bad/comptime_if.glaz:4:11: error: expected `!`, found token `&`
+     | 
+   4 |     $if (&FLAG) {}
+     |          ^^^^^
+tests/bad/comptime_if.glaz:5:11: error: unexpected expression for comptime `if` condition
+     | 
+   5 |     $if (FLAG++) {}
+     |          ^^^^^^
+glaz error: could not compile `comptime_if`, aborting due to 4 previous errors.

@@ -1,0 +1,6 @@
+fn main() {
+	_ = vec[i32]{}; // invalid
+	_ = [i32; _]::new(); // invalid
+
+	_ = [i32; 3]::new(1, 2, 3); // invalid
+}

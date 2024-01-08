@@ -1,0 +1,6 @@
+fn main() {
+    $if (_UNKNOWN_COMPILER_FLAG_) {}
+    $if (FLAG & 4) {} // invalid expression
+    $if (&FLAG) {}
+    $if (FLAG++) {}
+}

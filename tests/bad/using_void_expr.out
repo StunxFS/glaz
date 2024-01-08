@@ -1,0 +1,5 @@
+tests/bad/using_void_expr.glaz:4:8: error: invalid use of void expression
+     | 
+   4 |   _ = x();
+     |       ^^^
+glaz error: could not compile `using_void_expr`, aborting due to previous error.

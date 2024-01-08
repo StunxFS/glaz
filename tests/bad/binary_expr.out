@@ -1,0 +1,25 @@
+tests/bad/binary_expr.glaz:2:8: error: booleans only support `==`, `!=`, `and`, `or`, `&` and `|`
+     | 
+   2 |   _ = true + false;
+     |       ^^^^^^^^^^^^
+tests/bad/binary_expr.glaz:3:18: error: non-boolean expression in left operand for `or`
+     | 
+   3 |   _ = true and (22 or "");
+     |                 ^^
+tests/bad/binary_expr.glaz:3:24: error: non-boolean expression in right operand for `or`
+     | 
+   3 |   _ = true and (22 or "");
+     |                       ^^
+tests/bad/binary_expr.glaz:3:24: error: expected type `untyped_int`, found `str`
+     | 
+   3 |   _ = true and (22 or "");
+     |                       ^^
+tests/bad/binary_expr.glaz:3:17: error: non-boolean expression in right operand for `and`
+     | 
+   3 |   _ = true and (22 or "");
+     |                ^^^^^^^^^^
+tests/bad/binary_expr.glaz:3:17: error: expected type `bool`, found `untyped_int`
+     | 
+   3 |   _ = true and (22 or "");
+     |                ^^^^^^^^^^
+glaz error: could not compile `binary_expr`, aborting due to 6 previous errors.

@@ -1,0 +1,13 @@
+tests/bad/enum.glaz:2:14: error: default value for enum has to be an integer
+     | 
+   2 |     Field = true
+     |             ^^^^
+tests/bad/enum.glaz:7:3: error: duplicate enum value `0`
+     | 
+   7 | 	Field2 = 0, // BAD
+     | 	^^^^^^
+tests/bad/enum.glaz:10:3: error: duplicate enum value `1`
+     | 
+  10 | 	Field4 = 1
+     | 	^^^^^^
+glaz error: could not compile `enum`, aborting due to 3 previous errors.

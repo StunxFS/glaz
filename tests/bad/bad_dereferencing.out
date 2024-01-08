@@ -1,0 +1,5 @@
+tests/bad/bad_dereferencing.glaz:3:17: error: invalid indirect for `i32`
+     | 
+   3 |   unsafe { _ = x.*; }
+     |                ^^^
+glaz error: could not compile `bad_dereferencing`, aborting due to previous error.

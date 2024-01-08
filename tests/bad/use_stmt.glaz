@@ -1,0 +1,15 @@
+use undeclared_module::*;
+
+mod minetest {
+    pub fn init() {}
+}
+
+use minetest::init;
+use minetest::init;
+
+use minetest::init as mine_init;
+use minetest::init as mine_init;
+
+use minetest::{ self, self, mine_drop };
+
+fn main() {}

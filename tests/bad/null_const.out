@@ -1,0 +1,5 @@
+tests/bad/null_const.glaz:1:8: error: cannot assign null value to constant `CONST_X`
+     | 
+   1 | const CONST_X: *i32 = null;
+     |       ^^^^^^^
+glaz error: could not compile `null_const`, aborting due to previous error.

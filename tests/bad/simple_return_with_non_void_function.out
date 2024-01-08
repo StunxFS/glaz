@@ -1,0 +1,6 @@
+tests/bad/simple_return_with_non_void_function.glaz:1:15: error: simple `return` in a function whose return type is not void
+     | 
+   1 | fn a() i32 { return; }
+     |              ^^^^^^
+     = note: expected value of type `i32`
+glaz error: could not compile `simple_return_with_non_void_function`, aborting due to previous error.

@@ -1,0 +1,5 @@
+tests/bad/default_arg.glaz:1:7: error: arguments with default values must go at the end
+     | 
+   1 | fn x(_k: bool = true, _a: i32) {
+     |      ^^^^^^^^^^^^^^^
+glaz error: could not compile `default_arg`, aborting due to previous error.

@@ -1,0 +1,5 @@
+tests/bad/enum_has_no_field.glaz:6:19: error: enum `A` has no field `C`
+     | 
+   6 |   let mut x = A::C;
+     |                  ^
+glaz error: could not compile `enum_has_no_field`, aborting due to previous error.

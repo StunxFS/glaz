@@ -1,0 +1,12 @@
+fn x() ! {
+	raise "error";
+}
+
+fn x2() !i32 {
+	raise "error";
+}
+
+fn main() {
+	x();
+	_ = try x2() catch {};
+}

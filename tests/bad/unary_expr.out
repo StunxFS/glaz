@@ -1,0 +1,10 @@
+tests/bad/unary_expr.glaz:3:8: error: `!` can only be used with booleans
+     | 
+   3 |   _ = !d;
+     |       ^^
+tests/bad/unary_expr.glaz:5:8: error: cannot apply unary operator `-` to type `u8`
+     | 
+   5 |   _ = -unsigned;
+     |       ^^^^^^^^^
+     = note: unsigned values cannot be negated
+glaz error: could not compile `unary_expr`, aborting due to 2 previous errors.

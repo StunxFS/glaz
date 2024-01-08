@@ -1,0 +1,14 @@
+struct St { }
+
+impl St {
+	const INVALID: u8 = 0;
+}
+
+enum En { X }
+
+impl En {
+	// invalid
+	fn assoc_fn() {}
+}
+
+fn main() {}

@@ -1,0 +1,7 @@
+fn simple(_a: i32, _b: ...i32) {}
+
+fn main() {
+    let x = vec[i32]{ 1, 2 };
+    simple(1, 2, ...x);
+    simple(1, ...5);
+}

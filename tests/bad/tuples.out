@@ -1,0 +1,11 @@
+tests/bad/tuples.glaz:2:3: error: expected type `(i32, bool)`, found `(bool, i32)`
+     | 
+   2 | 	return (true, 1);
+     | 	^^^^^^^^^^^^^^^^
+     = note: in return of function `x`
+tests/bad/tuples.glaz:6:23: error: expected type `(i64, i64)`, found `(i32, bool)`
+     | 
+   6 | fn x3() (i64, i64) { return x(); }
+     |                      ^^^^^^^^^^
+     = note: in return of function `x3`
+glaz error: could not compile `tuples`, aborting due to 2 previous errors.

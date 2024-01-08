@@ -1,0 +1,5 @@
+tests/bad/casts.glaz:2:17: error: cannot cast type `untyped_int` to `rawptr`
+     | 
+   2 |   unsafe { _ = cast(3, rawptr); }
+     |                ^^^^^^^^^^^^^^^
+glaz error: could not compile `casts`, aborting due to previous error.
