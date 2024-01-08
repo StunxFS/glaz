@@ -1,0 +1,179 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+// TODO: Delete this module and use XML as project file syntax.
+
+use std::process;
+use std::console::eprintln;
+
+pub enum ProjectType {
+    Binary,
+    Library
+}
+
+/// Represents a single `glaz.proj` file.
+pub struct Project {
+    pub name: str,
+    pub description: str,
+    pub version: str,
+    pub typ: ProjectType,
+    pub homepage: str,
+    pub authors: vec[str],
+    pub dependencies: vec[str],
+    pub compiler_flags: vec[str]
+}
+
+impl Project {
+	@[inline]
+    pub fn new(path: str) Project {
+        return Parser{ tokenizer: Tokenizer::new(path) }.parse();
+    }
+}
+
+struct Parser {
+    mut tokenizer: Tokenizer,
+    mut prev_tok: Token,
+    mut tok: Token,
+    mut peek_tok: Token,
+    mut errs: i32,
+
+    // info
+    mut name: str,
+    mut description: str,
+    mut version: str,
+    mut typ: ProjectType,
+    mut homepage: str,
+    mut authors: vec[str],
+    mut dependencies: vec[str],
+    mut compiler_flags: vec[str]
+}
+
+impl Parser {
+	fn next(mut &self) {
+		self.prev_tok = self.tok;
+		self.tok = self.peek_tok;
+		self.peek_tok = self.tokenizer.next();
+	}
+
+	fn accept(mut &self, kind: Kind) bool {
+		if (kind == self.tok.kind) {
+			self.next();
+			return true;
+		}
+		return false;
+	}
+
+	fn check(mut &self, kind: Kind) {
+		if (self.accept(kind)) {
+			return;
+		}
+		self.error(fmt!("expected {}, found {}", kind.to_str(), self.tok));
+		self.next();
+	}
+
+	@[inline]
+	fn error(mut &self, msg: str, pos: Position = self.tok.pos) {
+		eprintln(fmt!("{}: error: {}", pos, msg));
+		self.errs++;
+	}
+
+	fn parse_ident(mut &self) str {
+		let l = self.tok.lit;
+		self.check(.Name);
+		return l;
+	}
+
+	fn parse_string(mut &self) str {
+		let l = self.tok.lit;
+		self.check(.String);
+		return l;
+	}
+
+	fn parse_list(mut &self) vec[str] {
+		let mut list = vec[str]::new();
+		self.check(.Lbracket);
+		if (self.tok.kind != .Rbracket) do {
+			push!(list, self.parse_string());
+		} while (self.accept(.Comma));
+		self.check(.Rbracket);
+		return list;
+	}
+
+	fn parse(mut &self) Project {
+		for (_ in 0..2) self.next();
+
+		while (self.tok.kind != .EOF) {
+			let field_pos = self.tok.pos;
+			let field = self.parse_ident();
+			switch (field) {
+				"name" => {
+					self.check(.Colon);
+					self.name = self.tok.lit;
+					self.check(.String);
+				}
+				"description" => {
+					self.check(.Colon);
+					self.description = self.tok.lit;
+					self.check(.String);
+				}
+				"version" => {
+					self.check(.Colon);
+					self.version = self.tok.lit;
+					self.check(.String);
+				}
+				"type" => {
+					self.check(.Colon);
+					switch (self.parse_string()) {
+						"binary", "bin" => self.typ = .Binary;
+						"library", "lib" => self.typ = .Library;
+						else => {
+							self.error(
+								fmt!("unknown value for project field `type`: `{}`",
+								self.prev_tok.lit), self.prev_tok.pos
+							);
+						}
+					}
+				}
+				"homepage" => {
+					self.check(.Colon);
+					self.homepage = self.tok.lit;
+					self.check(.String);
+				}
+				"authors" => {
+					self.check(.Colon);
+					self.authors = self.parse_list();
+				}
+				"dependencies" => {
+					self.check(.Colon);
+					self.dependencies = self.parse_list();
+				}
+				"compiler_flags" => {
+					self.check(.Colon);
+					self.compiler_flags = self.parse_list();
+				}
+				else => {
+					if (self.prev_tok.lit.len > 0) {
+						self.error(fmt!("unknown project field `{}`", self.prev_tok.lit),
+							field_pos);
+					}
+					break;
+				}
+			}
+		}
+
+		if (self.errs > 0) {
+			process::exit(1);
+		}
+
+		return Project{
+			name: self.name,
+			description: self.description,
+			version: self.version,
+			typ: self.typ,
+			homepage: self.homepage,
+			authors: self.authors.clone(),
+			dependencies: self.dependencies.clone(),
+			compiler_flags: self.compiler_flags.clone()
+		};
+	}
+}

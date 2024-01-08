@@ -1,0 +1,8 @@
+Usage: glaz new [OPTIONS] [ARGUMENT]
+
+This command creates a new project in the current directory. By default a binary
+project is created, for library you can use the `--lib` option.
+
+Options:
+   --lib
+      Create a library project.

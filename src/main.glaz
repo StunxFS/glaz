@@ -1,0 +1,288 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+mod help;
+pub mod proj;
+
+use std::{env, fs, path, os, process};
+use std::console::{self, println, eprintln};
+
+use src::proj::Project;
+
+/// Project manager version.
+pub const VERSION: str = "Glaz v0.1.0";
+const GLAZ_DIR: str = env::get("GLAZ_COMPILER_DIR");
+
+const MAIN_GLAZ: str = "use std::console;
+
+fn main() {
+	console::println(\"Hello World!\");
+}
+";
+
+pub struct GPM {
+	/// Current project file
+	proj_file: proj::Project,
+
+	/// Command to run
+	cmd: &str,
+
+	/// Current project code files
+	source_files: vec[str],
+
+	/// Options to be passed to the compiler. The options saved in
+	/// the `compiler_flags` field of the project file are also saved
+	/// here.
+	mut opts: vec[str]
+}
+
+fn main(args: vec[str]) {
+	GPM::parse_args(args);
+}
+
+impl GPM {
+	@[inline]
+	fn new(cmd: &str, opts: vec[str], files: vec[str], projf: proj::Project) GPM {
+		return GPM{
+			proj_file: projf,
+			cmd: cmd,
+			source_files: files,
+			opts: opts
+		};
+	}
+
+	// This function is called by `main`, and is responsible for parsing each of
+	// the arguments passed.
+	fn parse_args(args: vec[str]) {
+		if (args.len == 1) {
+			// no arguments passed, so show default help message
+			println(help::DEFAULT_HELP);
+			return;
+		}
+		let cmd = args[1];
+		switch (cmd) {
+			"new" => GPM::new_project(args[2:]);
+			"build", "run", "check", "test" => GPM::build_project(&cmd, args[2:]);
+			"symlink" => GPM::symlink();
+			"version" => eprintln(VERSION);
+			"help" => {
+				if (args.len > 3) {
+					gpm_error("command `help` expects 0 or 1 argument");
+				} elif (args.len == 2) {
+					println(help::DEFAULT_HELP);
+				} else {
+					println(try help::get(args[2]) catch {
+						gpm_error(err.msg);
+					});
+				}
+			}
+			else => gpm_error(
+				fmt!("unknown command `{}`. Run `glaz help` for usage.", cmd)
+			);
+		}
+	}
+
+	fn symlink() {
+		try os::symlink(path::join(GLAZ_DIR, "glaz"), "/usr/local/bin/glaz") catch {
+			gpm_error(
+				"failed to create symlink. Try again with sudo.\nReason: " + err.msg
+			);
+		};
+		try os::symlink(path::join(GLAZ_DIR, "compiler", "glazc"), "/usr/local/bin/glazc") catch {
+			gpm_error(
+				"failed to create symlink. Try again with sudo.\nReason: " + err.msg
+			);
+		};
+		println("The project manager and compiler were successfully symlinked!");
+	}
+
+	fn new_project(args: vec[str]) {
+		let mut name = "";
+		let mut is_lib = false;
+		for (i in 0..args.len) {
+			let arg = args[i];
+			if (arg == "--lib") {
+				is_lib = true;
+			} elif (arg.starts_with("--")) {
+				gpm_error(fmt!("unknown option `{}`", arg));
+			} else {
+				if (name.len == 0) {
+					name = arg.clone();
+				} else {
+					gpm_error("only one argument is expected");
+				}
+			}
+		}
+
+		// check valid project name
+		if (!is_snake_case(name)) {
+			gpm_error("the project name must be written in snake case");
+		} elif (name == "std") {
+			gpm_error("`std` is a special name, you cannot use this as a project name");
+		}
+
+		// we create the directory, if it exists we print the error and
+		// exit the manager
+		try fs::Dir::create(name) catch {
+			gpm_error(err.msg);
+		};
+
+		// then we create the project file, if we get an error we print it
+		// and exit the manager
+		let proj_file = fmt!("name: \"{}\"
+description: \"\"
+version: \"0.0.0\"
+type: \"{}\"
+homepage: \"\"
+authors: []
+dependencies: []
+", name, if (is_lib) "lib" else "bin");
+		try fs::write_file(path::join(name, "glaz.proj"), proj_file) catch {
+			gpm_error(err.msg);
+		};
+
+		// then we create the `src` directory, if we get an error we print it
+		// and then exit the manager
+		try fs::Dir::create(path::join(name, "src")) catch {
+			gpm_error(err.msg);
+		};
+
+		// if the project is a library, we create a blank file called `lib.glaz`
+		if (is_lib) {
+			try fs::write_file(path::join(name, "src", "lib.glaz"), "") catch {
+				gpm_error(err.msg);
+			};
+		} else {
+			// otherwise, we create a file that prints a "Hello World!"
+			try fs::write_file(path::join(name, "src", "main.glaz"), MAIN_GLAZ) catch {
+				gpm_error(err.msg);
+			};
+		}
+
+		// if everything went well, we print a message indicating that the project
+		// was created
+		println(
+			fmt!(
+				"project `{}` ({}) was created successfully!", name,
+				if (is_lib) "lib" else "bin"
+			)
+		);
+	}
+
+	fn build_project(cmd: &str, args: vec[str]) {
+		// check that the current directory has a project file
+		if (!path::is_file("glaz.proj")) {
+			gpm_error("the current directory should have a project file (glaz.proj)");
+		}
+
+		// check that the current directory has a `src` directory
+		if (!path::is_dir("src")) {
+			gpm_error("current directory has no a `src` directory");
+		}
+
+		// check that the directory has glaz source files
+		let files = load_glaz_files_from("src");
+		if (files.len == 0) {
+			gpm_error("`src/` has no glaz source files");
+		}
+
+		let mut c = GPM::new(cmd, args, files, Project::new("glaz.proj"));
+		c.build();
+	}
+
+	fn build(mut &self) {
+		self.status(
+			if (self.cmd.* == "check") "Checking" else "Compiling",
+			fmt!(
+				"{} v{} ({})", self.proj_file.name, self.proj_file.version,
+				fs::Dir::get_current()
+			)
+		);
+
+		self.check_valid_args();
+		self.load_information_from_the_project_file();
+
+		// run compiler
+		let mut exit_code = os::system(
+			fmt!("glazc {} {}", self.opts.join(" "), self.source_files.join(" "))
+		);
+
+		if (exit_code == 0) {
+			if (self.cmd.* == "check") {
+				self.status("Checked,", "the check has been completed successfully!");
+			} else {
+				// TODO: show elapsed time on completion of compilation
+				self.status(
+					"Finished",
+					if ("--release" in self.opts) "release [optimized] target"
+						else (if (self.cmd.* == "test") "test" else "debug")
+							+ " [unoptimized + debug-info] target"
+				);
+			}
+
+			if (self.cmd.* == "test") {
+				// If we are in test mode, we automatically run the binary
+				self.status("Running", "tests");
+				exit_code = os::system("./unit-test");
+				try fs::File::remove("./unit-test") catch { gpm_error(err.msg); };
+				if (exit_code != 0) {
+					process::exit(exit_code);
+				}
+			} elif (self.cmd.* == "run") {
+				self.status("Running", self.proj_file.name);
+				exit_code = os::system("./" + self.proj_file.name);
+				try fs::File::remove(self.proj_file.name) catch { gpm_error(err.msg); };
+				if (exit_code != 0) {
+					process::exit(exit_code);
+				}
+			}
+		} else {
+			process::exit(exit_code);
+		}
+	}
+
+	fn load_information_from_the_project_file(mut &self) {
+		// TODO: compile project dependencies
+		push!(self.opts, fmt!("--src-name {}", self.proj_file.name));
+
+		if (self.cmd.* == "check") {
+			push!(self.opts, "--check");
+		} elif (self.cmd.* == "test") {
+			push!(self.opts, "--test");
+		} elif (self.proj_file.typ == .Library) {
+			push!(self.opts, "--lib");
+		}
+
+		if (self.proj_file.compiler_flags.len > 0) {
+			extend!(self.opts, self.proj_file.compiler_flags);
+		}
+	}
+
+	fn check_valid_args(&self) {
+		for (&arg in self.proj_file.compiler_flags) {
+			self.check_valid_arg(arg);
+		}
+		for (&arg in self.opts) {
+			self.check_valid_arg(arg);
+		}
+	}
+
+	fn check_valid_arg(&self, arg: &str) {
+		switch (arg.*) {
+			"--src-name", "--lib", "--test" => gpm_error(
+				fmt!("`{}` flag cannot be passed to project manager", arg.*)
+			);
+			else => if (self.cmd.* in vec[str]{"test", "check", "symlink"}
+				and !arg.ends_with(".glaz") and arg.* !in vec[str]{
+					"--no-std", "--lib"
+				}) {
+				gpm_error(fmt!("`{}` command takes no arguments", self.cmd.*));
+			}
+		}
+	}
+
+	@[inline]
+	fn status(&self, st: str, msg: str) {
+		eprintln(fmt!("   {} {}", console::bold(console::green(st)), msg));
+	}
+}

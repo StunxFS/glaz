@@ -1,0 +1,3 @@
+Usage: glaz test
+
+Runs tests in the current project.

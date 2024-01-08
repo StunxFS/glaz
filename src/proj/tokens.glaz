@@ -1,0 +1,107 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::strings;
+
+pub enum Kind {
+	Unknown, // unknown
+	EOF, // end of file
+	Name, // name
+	Number, // number
+	String, // string
+	Colon, // :
+	Comma, // ,
+	Lbracket, // [
+	Rbracket // ]
+}
+
+const TOKENS_STRINGS: vec[(Kind, str)] = vec[(Kind, str)]{
+	(.Unknown, "unknown"),
+	(.EOF, "end of file"),
+	(.Name, "name"),
+	(.Number, "number"),
+	(.String, "string"),
+	(.Colon, ":"),
+	(.Comma, ","),
+	(.Lbracket, "["),
+	(.Rbracket, "]")
+};
+
+impl Kind {
+	pub fn to_str(self) str {
+		for (t in TOKENS_STRINGS) {
+			if (t.s1 == self) return t.s2;
+		}
+		return "<unknown>";
+	}
+}
+
+pub struct Position {
+	pub file: str,
+	pub line: i32,
+	pub col: i32,
+	pub pos: i32,
+	pub len: i32,
+
+	// multi-line support
+	pub line2: i32 = -1,
+	pub col2: i32
+}
+
+impl Position {
+	@[inline]
+	pub fn extend(self, end: Position) Position {
+		if (self.file == end.file and end.line > self.line) {
+			return Position{
+				...self,
+				line2: end.line,
+				col2: end.col
+			};
+		}
+		return Position{
+			...self,
+			len: end.pos - self.pos + end.len
+		};
+	}
+
+	pub fn to_str(self) str {
+		let mut msg = fmt!("{}:{}:{}", self.file, self.line + 1, max(1, self.col + 1));
+		if (self.line2 > -1) {
+			msg += fmt!("-{}:{}", self.line2 + 1, max(1, self.col2 + 1));
+		}
+		return msg;
+	}
+}
+
+pub struct Token {
+	pub lit: str,
+	pub kind: Kind,
+	pub pos: Position
+}
+
+impl Token {
+	@[inline]
+	pub fn new(kind: Kind, pos: Position, lit: str = "") Token {
+		return Token{
+			lit: lit,
+			kind: kind,
+			pos: pos
+		};
+	}
+
+	pub fn to_str(self) str {
+		let s = self.kind.to_str();
+		if (!s[0].is_letter()) {
+			return fmt!("token `{}`", s);
+		}
+
+		let mut sb = strings::Builder::new();
+		sb.write_str(s);
+
+		if (self.lit != "") {
+			sb.write_str(fmt!(" `{}`", self.lit));
+		}
+
+		return sb.to_str();
+	}
+}

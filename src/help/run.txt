@@ -1,0 +1,3 @@
+Usage: glaz run
+
+This command compiles and execute the current project.

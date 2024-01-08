@@ -1,0 +1,4 @@
+Usage: glaz check
+
+Check the files without compiling the program. This checks every submodule of the
+current project, starting from the root.

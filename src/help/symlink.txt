@@ -1,0 +1,6 @@
+Usage: glaz symlink
+
+This command adds a symbolic link for the Glaz project manager and compiler.
+
+Note that on Unix systems this command requires write permissions to `/usr/local/bin`
+to work.

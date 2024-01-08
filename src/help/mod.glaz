@@ -1,0 +1,33 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+/// Returns a help message based on the `cmd` argument. If the
+/// help message does not exist, an error is returned.
+pub fn get(cmd: str) !str {
+	switch (cmd) {
+		"new" => return include_str!("new.txt");
+		"build" => return include_str!("build.txt");
+		"check" => return include_str!("check.txt");
+		"run" => return include_str!("run.txt");
+		"test" => return include_str!("test.txt");
+		"symlink" => return include_str!("symlink.txt");
+		else => raise fmt!("documentation for command `{}` not found", cmd);
+	}
+}
+
+/// Help message displayed by default.
+pub const DEFAULT_HELP: str = "Glaz is a tool for managing Glaz source code.
+
+Usage: glaz [COMMAND] [OPTIONS] [ARGUMENT]
+
+Available commands:
+   new                   Create a new project in the current directory.
+   build                 Compile the current project.
+   check                 Check the files without compiling the program.
+   run                   Compile and run the current project (if binary).
+   test                  Run all tests in the current project.
+   symlink               Create a symbolic link for Glaz.
+   version               Show the version of compiler and exits.
+   help                  Show this message and exit.
+
+Use `glaz help <COMMAND>` for more information about a command.";

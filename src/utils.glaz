@@ -1,0 +1,59 @@
+// (C) 2021 Glaz Developers. All rights reserved. Use of this source code
+// is governed by an MIT license that can be found in the LICENSE file.
+
+use std::{fs, path, process};
+use std::console::{self, eprintln};
+
+const SUPPORT_COLOR: bool = console::can_show_color_on_stderr() and console::can_show_color_on_stdout();
+
+fn color(kind: str, msg: str) str {
+	if (!SUPPORT_COLOR) {
+		return msg;
+	} else switch {
+		kind.contains("error") => return console::red(msg);
+		kind.contains("warning") => return console::yellow(msg);
+		kind.contains("note") => return console::green(msg);
+		kind.contains("help") => return console::white(msg);
+		else => return msg;
+	}
+}
+
+fn blue(s: str) str {
+	if (!SUPPORT_COLOR) return s;
+	return console::bold(console::blue(s));
+}
+
+fn bold(s: str) str {
+	if (!SUPPORT_COLOR) return s;
+	return console::bold(s);
+}
+
+@[noreturn]
+pub fn gpm_error(msg: str) {
+	eprintln(bold(fmt!("{} {}", color("error", "gpm error:"), msg)));
+	process::exit(1);
+}
+
+pub fn load_glaz_files_from(path: str) vec[str] {
+	let files = try fs::Dir::walk(path) orelse vec[str]::new();
+	let mut r = vec[str]::new();
+	let sep = if (path.ends_with(path::PATH_SEPARATOR)) "" else path::PATH_SEPARATOR;
+	for (file in files) {
+		if (file.ends_with(".glaz")) {
+			push!(r, path + sep + file);
+		}
+	}
+	return r;
+}
+
+pub fn is_snake_case(name: str) bool {
+	for (c in name) {
+		if (c == '_') {
+			continue;
+		}
+		if (c.is_upper()) {
+			return false;
+		}
+	}
+	return true;
+}

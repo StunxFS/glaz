@@ -1,0 +1,52 @@
+Usage: glaz build [OPTIONS]
+
+This command compiles the current project along with their dependencies, into an
+executable or library.
+
+The executable/library will have the same name as the current project. The executable
+will be generated in the root folder of the project.
+
+Options:
+   -o <NAME>, --output <NAME>
+      Name of the executable/library to be generated.
+
+   --os <NAME>
+      Change the target OS that Glaz tries to compile for.
+      By default, the target OS is the host system.
+
+      Here is a list of the operating systems, supported by Glaz (CI tests runs on
+      every commit/PR for each of these): `linux`
+
+   -b, --backend <BACKEND>
+      The compiler will use the backend specified with this option. By default the
+      backend used is C.
+      Supported Backends: C.
+
+   -cc, --custom-compiler <C-NAME>
+      Change the C compiler that will be used to compile the executable/library.
+      By default Glaz uses `cc`. The only supported C compilers are GCC and Clang.
+
+   --release
+      Compile the project in release mode, where most optimizations are enabled.
+
+   --check
+      Tokenizes, parses, and checks the files without compiling the program.
+
+   --check-syntax
+       Only tokenizes and parse the files, but then stop. Useful for very quick
+       syntax checks.
+
+   --autodrop
+      Drop objects used in functions automatically (experimental).
+
+   --no-rt
+      Avoid implicit loading of the Glaz runtime.
+
+   --no-std
+      Avoid implicit loading of the Glaz standard library.
+
+   --keep-c
+      Don't remove the output C source file.
+
+   --verbose
+      Print additional messages to the console.
