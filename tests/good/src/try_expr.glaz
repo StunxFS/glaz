@@ -1,0 +1,22 @@
+fn fail(fails: bool = false) !i32 {
+	if (fails) {
+		raise "error";
+	}
+	return 5;
+}
+
+fn fail2() ! {
+	raise "error";
+}
+
+test "Using try expr" {
+	let c1 = try fail(true) orelse 11;
+	assert!(c1 == 11);
+
+	let c2 = try fail() orelse 10;
+	assert!(c2 == 5);
+
+	try fail2() catch {
+		assert!(err.msg == "error");
+	};
+}

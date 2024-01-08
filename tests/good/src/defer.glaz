@@ -1,0 +1,19 @@
+struct Box1 {
+    mut opened: bool
+}
+
+impl Box1 {
+    fn open(mut &self) {
+        self.opened = true;
+    }
+}
+
+fn defer_fn(mut box: &Box1) {
+    defer box.open();
+}
+
+test "Using `defer`" {
+    let mut box = Box1{};
+    defer_fn(&box);
+    assert!(box.opened);
+}

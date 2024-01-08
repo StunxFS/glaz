@@ -1,0 +1,9 @@
+fn tuple() (bool, i32) {
+	return (true, 2005);
+}
+
+test "Using tuples" {
+	let a = tuple();
+	assert!(a.s1);
+	assert!(a.s2 == 2005);
+}

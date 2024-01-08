@@ -1,0 +1,3 @@
+test "Comptime `if` expression" {
+	assert!($if (true) true $else false);
+}

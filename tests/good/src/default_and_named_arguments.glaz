@@ -1,0 +1,19 @@
+fn xyz(arg1: i32 = 10) i32 {
+  return arg1;
+}
+
+fn x2(arg1: i32 = 10, arg2: i32 = 20) {
+  _, _ = arg1, arg2;
+}
+
+fn x3(a: i32, b: i32 = 100, c: i32 = 300) {
+  _, _, _ = a, b, c;
+}
+
+test "Using default and named arguments" {
+  assert!(xyz() == 10);
+  assert!(xyz(100) == 100);
+
+  x2(arg2=100);
+  x3(2, 120, c=100*3);
+}

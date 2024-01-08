@@ -1,0 +1,19 @@
+const CONST_MAP: map<str, str> = map<str, str>{
+    "KEY1": "VALUE1"
+};
+
+test "Using maps" {
+	let key = "key";
+	let x = map<str, bool>{
+		"key1": true,
+		key: false
+	};
+	assert!("key1" in x);
+	assert!(x["key1"]);
+	assert!(!x["key"]);
+	assert!(x.len == 2);
+
+	assert!(CONST_MAP.len == 1);
+	assert!("KEY1" in CONST_MAP);
+	assert!(CONST_MAP["KEY1"] == "VALUE1");
+}

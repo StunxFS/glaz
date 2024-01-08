@@ -1,0 +1,34 @@
+@[abstract]
+struct AbstractBase {
+    field: i32
+}
+impl AbstractBase {
+    @[abstract]
+    pub fn abstract(&self) i32;
+}
+
+struct AbstractSon : AbstractBase {}
+impl AbstractSon {
+    pub fn set_field(mut &self, f: i32) {
+        self.field = f;
+    }
+
+    @[override]
+    pub fn abstract(&self) i32 {
+        return self.field;
+    }
+}
+
+test "Calling a abstract method" {
+    let mut a = AbstractSon{};
+    a.set_field(2020);
+    assert!(a.abstract() == 2020);
+}
+
+test "Initializing abstract struct in `base` field" {
+    _ = AbstractSon{
+        base: AbstractBase{
+            field: 10
+        }
+    };
+}

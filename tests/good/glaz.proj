@@ -1,0 +1,7 @@
+name: "good_tests"
+description: "Good tests :)"
+version: "0.1.0"
+type: "binary"
+homepage: "https://github.com/glaz-lang/glaz"
+authors: ["StunxFS"]
+dependencies: []

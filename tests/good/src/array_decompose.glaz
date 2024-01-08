@@ -1,0 +1,4 @@
+test "Array decomposing" {
+    let arr_i32 = vec[i32]{ 5, 5 };
+    assert!(sum(...arr_i32) == 10);
+}

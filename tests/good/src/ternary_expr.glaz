@@ -1,0 +1,3 @@
+test "Using ternary expr" {
+	assert!(if (2 > 1) true else false);
+}

@@ -1,0 +1,41 @@
+struct Component {
+    size: i32
+}
+
+impl Component {
+    @[virtual]
+    pub fn get_size(&self) i32 {
+        return self.size;
+    }
+}
+
+struct Simple : Component {}
+
+struct Double : Component { }
+impl Double {
+    @[override]
+    pub fn get_size(&self) i32 {
+        return self.size * 2;
+    }
+}
+
+test "Using virtual methods" {
+    let c = Component{
+        size: 10
+    };
+    assert!(c.get_size() == 10);
+
+    let s = Simple{
+        base: Component{
+            size: 10
+        }
+    };
+    assert!(s.get_size() == 10);
+
+    let d = Double{
+        base: Component{
+            size: 10
+        }
+    };
+    assert!(d.get_size() == 20);
+}

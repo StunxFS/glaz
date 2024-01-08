@@ -1,0 +1,60 @@
+struct Base {
+    mut field1: i32 = 2004,
+    fieldx: i32
+}
+
+impl Base {
+    fn pow2(&self) i32 {
+        assert!(self is Son);
+        return self.field1 * 2;
+    }
+}
+
+struct Son : Base {
+    field2: i32 = 2009
+}
+
+impl Son {
+    fn get_fieldx(&self) i32 {
+        return base.fieldx;
+    }
+}
+
+fn set_field1(mut b: &Base, new_val: i32) {
+    b.field1 = new_val;
+}
+
+test "Using inherited fields" {
+    let s = Son{};
+    assert!(s.field1 == 2004);
+    assert!(s.field2 == 2009);
+}
+
+test "Upcasting/downcasting and basic polymorphism" {
+    let mut s = &Son{
+        base: Base{
+            fieldx: 171
+        }
+    };
+    assert!(s.field1 == 2004);
+    assert!(s.fieldx == 171);
+    assert!(s.get_fieldx() == 171);
+    assert!(s.pow2() == 4008);
+
+    let mut b = cast(s, &Base);
+    b.field1 = 1991;
+    assert!(b is Son);
+    switch (b) is {
+        &Son => assert!(true);
+        else => assert!(false);
+    }
+
+    s = cast(b, &Son);
+    assert!(s.field1 == 1991);
+
+    set_field1(s, 666);
+    assert!(s.field1 == 666);
+
+    set_field1(cast(s, &Base), 777);
+    assert!(s.field1 == 777);
+}

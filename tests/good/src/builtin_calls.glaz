@@ -1,0 +1,45 @@
+test "builtin `assert`" {
+	assert!(true);
+	assert!(true, "In case the `assert` fails, this message should be displayed");
+}
+
+test "builtin `sizeof`" {
+	assert!(sizeof!(i32) == 4);
+	assert!(sizeof!(u8) == 1);
+	assert!(sizeof!(bool) == 1);
+}
+
+test "builtin `default`" {
+	assert!(default!(bool) == false);
+	assert!(default!(f64) == 0.0);
+}
+
+test "builtin `fmt`" {
+	assert!(fmt!("5 + 5 = {}", 5 + 5) == "5 + 5 = 10");
+	assert!(fmt!("{}", true) == "true");
+	assert!(fmt!("{} - {} - {}", true, 2, 'A') == "true - 2 - A");
+
+	let value = 5;
+	assert!(fmt!("value: {}", &value) == "value: 5");
+}
+
+test "builtin `push`, `pop` and `extend`" {
+	let mut arr = vec[i32]::new();
+	assert!(arr.len == 0);
+	push!(arr, 6);
+	assert!(arr.len == 1);
+	push!(arr, 9);
+	assert!(arr.len == 2);
+	let v = pop!(arr);
+	assert!(arr.len == 1);
+	assert!(v == 9);
+
+	assert!(typeof!(arr) == "[i32]");
+
+	extend!(arr, vec[i32]{ 40, 45, 50, 55 });
+	assert!(arr.len == 5);
+}
+
+test "builtin `include_str`" {
+	assert!(include_str!("testdata/include_text.txt").len == 9);
+}

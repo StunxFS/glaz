@@ -1,0 +1,8 @@
+struct People {
+  pub name: str = "Mike"
+}
+
+test "Using structs" {
+  assert!(People{}.name == "Mike");
+  assert!(People{name: "Tom"}.name == "Tom");
+}

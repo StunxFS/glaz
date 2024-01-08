@@ -1,0 +1,101 @@
+test "Using `Box<T>`" {
+    let x = box!(5);
+    assert!(x.* == 5);
+    let y = &x;
+    assert!(y.* == 5);
+
+    let b = box!(Boxed{});
+    assert!(b.alpha == 100);
+    assert!(b.get_alpha() == 100);
+
+    let values = vec[Box<str>]{
+        box!("Slot1"),
+        box!("Slot2")
+    };
+    for (&v in values) {
+        assert!(v.len == 5);
+    }
+    for (_, &v in values) {
+        assert!(v.len == 5);
+    }
+
+    let dict = map<str, Box<str>>{
+        "Key1": box!("Slot1"),
+        "Key2": box!("Slot2")
+    };
+    for (_, &v in dict) {
+        assert!(v.len == 5);
+    }
+    for (k, &v in dict) {
+        assert!(k.len == 4);
+        assert!(v.len == 5);
+    }
+
+    for (_, &v in [Box<i32>; _]{
+        box!(5),
+        box!(6)
+    }) {
+        assert!(v.* > 4);
+    }
+}
+
+struct Boxed {
+    alpha: i32 = 100
+}
+
+impl Boxed {
+    pub fn get_alpha(&self) i32 {
+        return self.alpha;
+    }
+
+    pub fn get_alpha_from_sub_box(&self) i32 {
+        assert!(self is SubBox);
+        return self.alpha;
+    }
+}
+
+struct SubBox : Boxed {}
+
+test "Using boxed value with inherited fields/methods" {
+    let s = box!(SubBox{});
+    assert!(s.alpha == 100);
+    assert!(s.get_alpha_from_sub_box() == 100);
+}
+
+fn check_i32(a: &i32, b: i32) {
+    assert!(a.* == b);
+}
+
+test "Using Box<T> directly with references" {
+    check_i32(box!(1991), 1991);
+}
+
+fn rec_box(a: &Boxed) {
+    assert!(a is SubBox);
+}
+
+test "Using Box<T> with polymorphism" {
+    let s = box!(SubBox{});
+    rec_box(s);
+
+    let b: Box<Boxed> = s;
+    assert!(b is SubBox);
+    switch (&b) is {
+        &SubBox => assert!(true);
+        else => assert!(false);
+    }
+
+    let b2 = cast(s, &Boxed);
+    assert!(b2 is SubBox);
+    switch (b2) is {
+        &SubBox => assert!(true);
+        else => assert!(false);
+    }
+
+    let b3: Box<Boxed> = box!(SubBox{});
+    assert!(b3 is SubBox);
+    switch (&b3) is {
+        &SubBox => assert!(true);
+        else => assert!(false);
+    }
+}

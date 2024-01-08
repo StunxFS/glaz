@@ -1,0 +1,7 @@
+test "Using if stmt" {
+	let mut q = false;
+	if (10 < 20) {
+		q = true;
+	}
+	assert!(q);
+}

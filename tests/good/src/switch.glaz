@@ -1,0 +1,27 @@
+enum XXX {
+    Alpha, Beta
+}
+
+test "Using `switch` statement" {
+    switch ("Nathan James") {
+        "Nathan James", "NJ" => assert!(true);
+        else => assert!(false);
+    }
+
+    switch (5) {
+        1, 2, 3, 4, 5 => assert!(true);
+        else => assert!(false);
+    }
+
+    switch {
+        "Glaz".starts_with("G"), 5 > 20 => assert!(true);
+        else => assert!(false);
+    }
+
+    let p0 = XXX::Alpha;
+    switch (p0) {
+        XXX::Alpha => assert!(true);
+        .Beta => assert!(true);
+        else => assert!(false);
+    }
+}

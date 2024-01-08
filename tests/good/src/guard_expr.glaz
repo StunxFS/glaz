@@ -1,0 +1,11 @@
+fn result_i32() !i32 {
+	return 5;
+}
+
+test "Using a guard with `if` and a function returning `!i32`" {
+	if (let r = result_i32()) {
+		assert!(r == 5);
+	} else {
+		assert!(false, "could not get expected value from guard");
+	}
+}

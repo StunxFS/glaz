@@ -1,0 +1,9 @@
+mod module {
+	pub fn number() i32 {
+		return 100;
+	}
+}
+
+test "Using module" {
+	assert!(module::number() == 100);
+}

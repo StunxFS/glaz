@@ -1,0 +1,28 @@
+test "Using optional value" {
+    let mut val: ?i32 = 10;
+    assert!(val.? == 10);
+
+    if (let v = val) {
+        assert!(v == 10);
+    } else {
+        assert!(false);
+    }
+
+    val = null;
+    assert!(val == null);
+}
+
+test "Using optional reference" {
+    let x = 10;
+    let mut ref: ?&i32 = &x;
+    assert!(ref.?.* == 10);
+
+    if (let v = ref) {
+        assert!(v.* == 10);
+    } else {
+        assert!(false);
+    }
+
+    ref = null;
+    assert!(ref == null);
+}

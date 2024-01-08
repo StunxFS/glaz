@@ -1,0 +1,14 @@
+struct Croack {
+    @break: i32
+}
+
+test "Escaped keywords" {
+    let q = Croack{
+        @break: 100
+    };
+    assert!(q.@break == 100);
+
+    let @false = 0;
+    let @true = 1;
+    assert!(@true > @false);
+}

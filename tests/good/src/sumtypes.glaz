@@ -1,0 +1,40 @@
+type StrOrI32 = str | i32;
+
+const SUM_TYPE_WITH_CONST: StrOrI32 = 1;
+
+test "SumTypes: constants" {
+    assert!(SUM_TYPE_WITH_CONST is i32);
+}
+
+fn ret() StrOrI32 {
+	return "string literal";
+}
+
+test "SumTypes: basic type checking" {
+	let q = ret();
+	if (q is str) {
+		assert!(cast(q, str) == "string literal");
+	} else {
+        assert!(false);
+    }
+}
+
+fn st_ref(a: &StrOrI32) bool {
+    return a is str;
+}
+
+test "SumTypes: references" {
+    assert!(st_ref("Why?"));
+
+    let v: StrOrI32 = "LookMe";
+    assert!(st_ref(&v));
+
+    let vs = cast(v, &str);
+
+    // make a 'StrOrI32' pointing to value from 'vs'
+    // NOTE: it is unsafe
+    assert!(st_ref(vs));
+
+    // make a 'StrOrI32' with 'vs' pointed value
+    assert!(st_ref(vs.*));
+}

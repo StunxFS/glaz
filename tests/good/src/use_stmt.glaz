@@ -1,0 +1,10 @@
+mod submodule;
+
+use submodule::add;
+use submodule::{sub, mult};
+
+test "`use` statement" {
+    assert!(add(5, 5) == 10);
+    assert!(sub(10, 5) == 5);
+    assert!(mult(2, 4) == 8);
+}

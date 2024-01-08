@@ -1,0 +1,37 @@
+fn func1() i32 {
+	let mut i = 0;
+L1:
+	i++;
+	if (i < 3) {
+		unsafe { goto L1; }
+	}
+	return i;
+}
+
+test "Using `goto`" {
+	assert!(func1() == 3);
+}
+
+fn func2() bool {
+	let a, b, c, d = 4, 5, 6, 7;
+	loop {
+		if (a == 4) {
+			if (b == 5) {
+				if (c == 6) {
+					if (d == 7) {
+						unsafe {
+							goto L1;
+						}
+					}
+				}
+			}
+		}
+	}
+	return false;
+L1:
+	return true;
+}
+
+test "Using `goto` after return" {
+	assert!(func2());
+}

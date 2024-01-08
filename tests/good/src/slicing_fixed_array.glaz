@@ -1,0 +1,5 @@
+test "Slicing fixed array" {
+	let fixed = [i32; 4]{ 1, 2, 3, 4 };
+	let dynamic = fixed[:];
+	assert!(dynamic.len == fixed.len);
+}

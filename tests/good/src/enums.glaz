@@ -1,0 +1,27 @@
+enum Animals {
+	Dog,
+	Cat = 20
+}
+
+fn x(idx: i32) Animals {
+	if (idx == 1) {
+		return Animals::Dog;
+	}
+	return .Cat; // Using dot enum syntax
+}
+
+fn x_res(idx: i32) !Animals {
+	if (idx == 1) {
+		return Animals::Dog;
+	}
+	raise "unknown idx";
+}
+
+test "Using enums" {
+	assert!(x(1) == Animals::Dog);
+	assert!(x(0) == .Cat);
+	assert!(cast(x(0), i32) == 20);
+
+	let t = try x_res(1) orelse .Cat;
+	assert!(t == .Dog);
+}

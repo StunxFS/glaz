@@ -1,0 +1,4 @@
+test "Fixed array with unknown size" {
+	// the size of the fixed array must be calculated by the compiler
+	assert!([i32; _]{ 1, 2, 3 }.len == 3);
+}

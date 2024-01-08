@@ -1,0 +1,13 @@
+fn returns_void() {}
+
+fn foo() i32 {
+    return 1234;
+}
+
+test "`void` is ignored" {
+    returns_void();
+}
+
+test "Explicitly ignoring expression value" {
+    _ = foo();
+}

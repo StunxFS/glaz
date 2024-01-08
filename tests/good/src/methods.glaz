@@ -1,0 +1,14 @@
+struct Suma {
+  a: i32,
+  b: i32
+}
+
+impl Suma {
+  pub fn add(self) i32 {
+    return self.a + self.b;
+  }
+}
+
+test "Using methods" {
+  assert!((Suma{a: 1, b: 4}).add() == 5);
+}

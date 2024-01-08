@@ -1,0 +1,6 @@
+type Int = i32;
+
+test "Using type aliases" {
+    let i: Int = 200;
+    assert!(i == 200);
+}

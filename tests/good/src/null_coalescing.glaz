@@ -1,0 +1,8 @@
+fn null_coalescing(value: ?i32) i32 {
+    return value ?? 5;
+}
+
+test "Using the null-coalescing operator" {
+    assert!(null_coalescing(10) == 10);
+    assert!(null_coalescing(null) == 5);
+}

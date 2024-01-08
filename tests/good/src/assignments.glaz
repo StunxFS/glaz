@@ -1,0 +1,36 @@
+const JKF: i32 = 10;
+
+test "Assignments" {
+    let h = 10;
+    let g: i32 = 100;
+    let c = 100;
+    {
+        let yu = 100;
+        assert!(yu == 100);
+    }
+    assert!(JKF == 10 and h == 10 and g == 100 and c == 100);
+}
+
+test "Blank ident" {
+    _ = 1;
+    _ = "";
+    _ = true;
+    _ = 'a';
+    let (_, _) = (1, 2);
+    let _ = 'e';
+}
+
+fn tuple_ret() (bool, str) {
+    return (true, "speak");
+}
+
+test "Tuple assignments" {
+    let (mut a, mut b) = (10, 15);
+    assert!(a == 10 and b == 15);
+
+    (a, b) = (20, 25);
+    assert!(a == 20 and b == 25);
+
+    let (c, d) = tuple_ret();
+    assert!(c and d == "speak");
+}

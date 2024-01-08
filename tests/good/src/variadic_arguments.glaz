@@ -1,0 +1,30 @@
+fn sum(numbers: ...i32) i32 {
+    let mut total = 0;
+    for (n in numbers) {
+        total += n;
+    }
+    return total;
+}
+
+fn sum2(numbers: ...i32) i32 {
+    return sum(numbers);
+}
+
+fn mul(b: i32, numbers: ...i32) i32 {
+    let mut total = 0;
+    for (n in numbers) {
+        total += n * b;
+    }
+    return total;
+}
+
+test "Using a variadic function" {
+    assert!(sum() == 0);
+    assert!(sum(5, 5) == 10);
+
+    assert!(sum2() == 0);
+    assert!(sum2(5, 5) == 10);
+
+    assert!(mul(2) == 0);
+    assert!(mul(2, 1, 2, 3, 4, 5) == 30);
+}
